@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { passwordConfigured, passwordMatches } from "@/lib/auth/password";
+import { clientIp } from "@/lib/auth/client-ip";
+import { recordAuthAttempt } from "@/lib/auth/auth-log";
 import {
   SESSION_COOKIE,
   SESSION_TTL_MS,
@@ -24,6 +26,11 @@ export const runtime = "nodejs";
  * attempts are slowed after a handful of failures. In-memory is enough here: the
  * app is one process, and a restart clearing the counter costs an attacker the
  * same restart.
+ *
+ * This is the inner of two layers and cannot be the only one. It only reacts after
+ * Node has accepted the connection, and a restart clears it. Every attempt is also
+ * written to the auth log so fail2ban can drop the source at the firewall, where a
+ * ban survives a restart and costs the app nothing. See the README.
  */
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_MS = 60_000;
@@ -39,8 +46,13 @@ export async function POST(request: Request) {
   }
 
   const now = Date.now();
+  const ip = await clientIp();
+
   if (now < lockedUntil) {
     const seconds = Math.ceil((lockedUntil - now) / 1000);
+    // Logged separately from a failure: the app already refused this one, so a
+    // fail2ban filter can decide for itself whether it should count.
+    void recordAuthAttempt("locked", ip);
     return NextResponse.json(
       { error: `Too many failed attempts. Try again in ${seconds}s.` },
       { status: 429, headers: { "cache-control": "no-store" } },
@@ -64,6 +76,7 @@ export async function POST(request: Request) {
       lockedUntil = now + LOCKOUT_MS;
       failures = 0;
     }
+    void recordAuthAttempt("failed", ip);
     return NextResponse.json(
       { error: "Incorrect password." },
       { status: 401, headers: { "cache-control": "no-store" } },
@@ -78,6 +91,11 @@ export async function POST(request: Request) {
       { status: 500, headers: { "cache-control": "no-store" } },
     );
   }
+
+  // Logged as well as the failures: after a ban fires, "did anyone actually get
+  // in" is the question that matters, and a file with only failures cannot answer
+  // it.
+  void recordAuthAttempt("success", ip);
 
   const response = NextResponse.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   response.cookies.set({
