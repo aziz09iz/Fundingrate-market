@@ -350,10 +350,6 @@ export default function AccountOverviewPage() {
                               : c.keyTail
                                 ? `••••${c.keyTail}`
                                 : "—"}
-                            {c.readOnlyVenue && (
-                              // "read-only" would overstate it: cancelling works.
-                              <span className="ml-1 text-[10px] text-warning">no order entry</span>
-                            )}
                           </TableCell>
                           <TableCell>
                             {/* The health word carries the state; the colour only

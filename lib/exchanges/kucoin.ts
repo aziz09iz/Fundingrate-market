@@ -4,7 +4,7 @@ import type {
   StreamUpdate,
   WsEndpointPlan,
 } from "@/lib/exchanges/adapter";
-import { decimalRateToPct, fetchJson, num, rankByAbsRate } from "@/lib/exchanges/adapter";
+import { decimalRateToPct, fetchJson, num } from "@/lib/exchanges/adapter";
 
 // Verified against live payloads:
 //   REST /api/v1/contracts/active   -> { symbol, fundingFeeRate,
@@ -62,17 +62,22 @@ interface KucoinFrame {
   };
 }
 
+// KuCoin's 100-per-connection limit counts *topics*, not symbols, and one topic
+// carries up to 20 comma-joined symbols. So 200 coins is 10 topics — an order of
+// magnitude inside the cap rather than double it, which is why the old 45 was far
+// more conservative than it needed to be.
 const INSTRUMENT_PLAN: WsEndpointPlan = {
   key: "instrument",
   carries: ["funding"],
-  // KuCoin caps a connection at 100 topics; keep headroom for retries.
-  maxTopicsPerConnection: 45,
+  mode: "topics",
+  maxTopicsPerConnection: 200,
 };
 
 const TICKER_PLAN: WsEndpointPlan = {
   key: "tickerV2",
   carries: ["book"],
-  maxTopicsPerConnection: 45,
+  mode: "topics",
+  maxTopicsPerConnection: 150,
 };
 
 /** KuCoin futures symbols look like XBTUSDTM; XBT is their name for BTC. */
@@ -115,20 +120,19 @@ export const kucoinAdapter: ExchangeAdapter = {
   id: "kucoin",
   defaultIntervalHours: 8,
 
-  async fetchRanking(signal) {
+  async fetchInstruments(signal) {
     const body = await fetchJson<KucoinResponse<KucoinContract[]>>(
       "kucoin/contracts",
       "https://api-futures.kucoin.com/api/v1/contracts/active",
       signal,
     );
-    const rows = body.data ?? [];
-    const pairs = rows.flatMap((c) => {
-      if (c.status !== "Open" || c.quoteCurrency !== "USDT") return [];
+    const coins = new Set<string>();
+    for (const c of body.data ?? []) {
+      if (c.status !== "Open" || c.quoteCurrency !== "USDT") continue;
       const coin = coinFromVenueSymbol(c.symbol);
-      if (!coin) return [];
-      return [{ coin, ratePct: decimalRateToPct(c.fundingFeeRate) }];
-    });
-    return rankByAbsRate(pairs);
+      if (coin) coins.add(coin);
+    }
+    return [...coins];
   },
 
   async fetchIntervals(signal) {

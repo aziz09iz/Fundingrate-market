@@ -4,57 +4,37 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
 import { PageHeader } from "@/components/page-header";
 import { FeeSettings } from "@/components/settings/fee-settings";
 import { NotificationSettings } from "@/components/settings/notification-settings";
 import { apiFetch } from "@/lib/api/client";
-import type { AccountType, GeneralSettings, MarketConfig } from "@/lib/types";
-import { Check, Loader2, Save, ShieldCheck } from "lucide-react";
+import type { AccountType, GeneralSettings } from "@/lib/types";
+import { Loader2, ShieldCheck } from "lucide-react";
 
 const DEFAULTS: GeneralSettings = {
   // Paper, so a fresh install cannot land on live and turn a mis-click into a real
   // order. The stored value replaces this as soon as it loads.
   defaultAccount: "paper",
-  pollIntervalSec: 60,
-  layer1CountPerExchange: 10,
 };
-
-type SaveState = "idle" | "saving" | "saved" | "error";
 
 export default function GeneralSettingsPage() {
   const [settings, setSettings] = useState<GeneralSettings>(DEFAULTS);
-  const [saveState, setSaveState] = useState<SaveState>("idle");
   const [savingDefault, setSavingDefault] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Market settings and the default account both live on the server, so read the
-  // applied values on mount rather than showing a guess.
+  // The default account lives on the server, so read the applied value on mount
+  // rather than showing a guess.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      try {
-        const res = await fetch("/api/market/config", { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const config = (await res.json()) as MarketConfig;
-        if (cancelled) return;
-        setSettings((prev) => ({
-          ...prev,
-          pollIntervalSec: config.pollIntervalSec,
-          layer1CountPerExchange: config.layer1CountPerExchange,
-        }));
-      } catch {
-        // Leaving the defaults on screen is better than blocking the page.
-      }
       try {
         const stored = await apiFetch<{ defaultAccount: AccountType }>("/api/settings/defaults");
         if (cancelled) return;
         setSettings((prev) => ({ ...prev, defaultAccount: stored.defaultAccount }));
       } catch {
-        // Same reasoning: the field shows its default rather than an error.
+        // Leaving the default on screen is better than blocking the page.
       }
     })();
     return () => {
@@ -62,15 +42,12 @@ export default function GeneralSettingsPage() {
     };
   }, []);
 
-  const patch = (next: Partial<GeneralSettings>) =>
-    setSettings((prev) => ({ ...prev, ...next }));
-
   /**
    * Saves the default account immediately on click.
    *
-   * Deliberately not folded into the page's Save button: that one applies market
-   * cadence, and a picker that looked applied but was not saved is exactly the
-   * failure these settings had before.
+   * Every card on this page now saves itself. The page used to carry one Save button
+   * that applied only the market cadence, which is exactly the arrangement that let a
+   * picker look applied without being stored.
    */
   const onDefaultAccount = useCallback(async (next: AccountType) => {
     setSavingDefault(true);
@@ -93,114 +70,12 @@ export default function GeneralSettingsPage() {
     }
   }, []);
 
-  const onSave = useCallback(async () => {
-    setSaveState("saving");
-    setError(null);
-    try {
-      const res = await fetch("/api/market/config", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          pollIntervalSec: settings.pollIntervalSec,
-          layer1CountPerExchange: settings.layer1CountPerExchange,
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      // The server clamps out-of-range values, so adopt what it applied.
-      const applied = (await res.json()) as MarketConfig;
-      setSettings((prev) => ({
-        ...prev,
-        pollIntervalSec: applied.pollIntervalSec,
-        layer1CountPerExchange: applied.layer1CountPerExchange,
-      }));
-      setSaveState("saved");
-      toast.success("Market settings applied", {
-        description: `Ranking every ${applied.pollIntervalSec}s · ${applied.layer1CountPerExchange} layer 1 pairs per venue`,
-      });
-      setTimeout(() => setSaveState("idle"), 1800);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-      setSaveState("error");
-      toast.error("Could not save market settings", { description: message });
-    }
-  }, [settings.pollIntervalSec, settings.layer1CountPerExchange]);
-
   return (
     <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-4 px-4 py-6">
       <PageHeader
         title="General Settings"
-        description="Market data cadence, subscription depth, and application preferences."
-        actions={
-          <Button
-            size="sm"
-            className="h-8 gap-1.5"
-            disabled={saveState === "saving"}
-            onClick={() => void onSave()}
-          >
-            {saveState === "saving" ? (
-              <Loader2 aria-hidden className="size-3.5 animate-spin" />
-            ) : saveState === "saved" ? (
-              <Check aria-hidden className="size-3.5" />
-            ) : (
-              <Save aria-hidden className="size-3.5" />
-            )}
-            {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : "Save"}
-          </Button>
-        }
+        description="Paper fees, notifications, application defaults and the always-on safety rules."
       />
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between py-3">
-          <CardTitle className="text-sm">Market Data</CardTitle>
-          <Badge variant="secondary" className="text-[10px]">applies immediately</Badge>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="poll" className="text-xs text-muted-foreground">
-              Pair ranking interval (seconds)
-            </Label>
-            <Input
-              id="poll"
-              type="number"
-              min={10}
-              max={600}
-              value={settings.pollIntervalSec}
-              onChange={(e) => patch({ pollIntervalSec: Number(e.target.value) })}
-              className="max-w-[8rem] font-mono text-xs num"
-            />
-            <p className="text-[10px] text-muted-foreground">
-              How often each venue is polled to decide which pairs to watch. Funding rates and
-              prices themselves always come from the live streams, never from this poll.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="layer1" className="text-xs text-muted-foreground">
-              Layer 1 pairs per exchange
-            </Label>
-            <Input
-              id="layer1"
-              type="number"
-              min={1}
-              max={50}
-              value={settings.layer1CountPerExchange}
-              onChange={(e) => patch({ layer1CountPerExchange: Number(e.target.value) })}
-              className="max-w-[8rem] font-mono text-xs num"
-            />
-            <p className="text-[10px] text-muted-foreground">
-              Each venue streams its own top pairs by funding rate. Layer 2 then fills in the same
-              coins on every other venue that lists them, so raising this widens the whole board.
-            </p>
-          </div>
-
-          {error && (
-            <Alert variant="error" className="text-[11px]">
-              {error}
-            </Alert>
-          )}
-        </CardContent>
-      </Card>
 
       <FeeSettings />
 
@@ -236,6 +111,12 @@ export default function GeneralSettingsPage() {
               whole installation rather than this browser.
             </p>
           </div>
+
+          {error && (
+            <Alert variant="error" className="text-[11px]">
+              {error}
+            </Alert>
+          )}
         </CardContent>
       </Card>
 

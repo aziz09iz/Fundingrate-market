@@ -5,9 +5,8 @@ import { exchangeInfo } from "@/lib/utils";
 /**
  * A private adapter for a venue whose authenticated API is not implemented.
  *
- * Only Lighter uses this now. Hyperliquid trades, Aster trades, and edgeX reads and
- * cancels; Lighter is the one venue where the obstacle is cryptographic rather than
- * a matter of work.
+ * Only Lighter uses this. Hyperliquid and Aster both trade; Lighter is the one venue
+ * where the obstacle is cryptographic rather than a matter of work.
  *
  * Lighter does not sign requests — it signs L2 transactions, with a Schnorr
  * signature over the ECgFp5 curve using Poseidon2 hashing over the Goldilocks

@@ -14,6 +14,7 @@ import {
   Terminal,
   TrendingUp,
   Wallet,
+  Waypoints,
 } from "lucide-react";
 
 /**
@@ -64,13 +65,13 @@ export const NAV: NavSection[] = [
             href: "/dashboard/cex",
             label: "Centralized Exchange",
             icon: Building2,
-            keywords: ["funding", "cex", "binance", "bybit", "okx"],
+            keywords: ["funding", "cex", "bybit", "okx", "bitget"],
           },
           {
             href: "/dashboard/dex",
             label: "Decentralized Exchange",
             icon: Boxes,
-            keywords: ["funding", "dex", "hyperliquid", "aster", "lighter", "edgex"],
+            keywords: ["funding", "dex", "hyperliquid", "aster", "lighter"],
           },
         ],
       },
@@ -143,7 +144,7 @@ export const NAV: NavSection[] = [
             href: "/settings/api-keys/cex",
             label: "API Key Venues",
             icon: Building2,
-            keywords: ["credentials", "secret", "api", "cex", "edgex"],
+            keywords: ["credentials", "secret", "api", "cex"],
           },
           {
             href: "/settings/api-keys/dex",
@@ -154,10 +155,25 @@ export const NAV: NavSection[] = [
         ],
       },
       {
+        href: "/settings/streams",
+        label: "Stream Fabric",
+        icon: Waypoints,
+        keywords: [
+          "ws",
+          "ws manager",
+          "websocket",
+          "shards",
+          "connections",
+          "telemetry",
+          "streams",
+          "firehose",
+        ],
+      },
+      {
         href: "/settings/general",
         label: "General Setting",
         icon: Settings,
-        keywords: ["fees", "cadence", "notifications", "telegram", "safety"],
+        keywords: ["fees", "notifications", "telegram", "safety", "defaults"],
       },
     ],
   },

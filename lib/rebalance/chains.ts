@@ -3,8 +3,8 @@ import type { ExchangeId, NetworkId, TransferToken } from "@/lib/types";
 /**
  * Chain name normalisation.
  *
- * Every venue spells the same chain differently. Binance calls Tron "TRX",
- * KuCoin calls it "trx", OKX calls it "TRON". Sending USDT on a chain the
+ * Every venue spells the same chain differently. KuCoin calls Tron "trx", OKX
+ * calls it "TRON", Gate.io calls Arbitrum "arbevm". Sending USDT on a chain the
  * destination does not credit loses the funds with no recourse, so this mapping
  * is written out per venue rather than derived from a fuzzy match.
  *
@@ -27,14 +27,6 @@ export const NETWORK_LABELS: Record<NetworkId, string> = {
  * Only chains we are confident about appear here.
  */
 const VENUE_CHAINS: Record<ExchangeId, Record<string, NetworkId>> = {
-  binance: {
-    trx: "TRC20",
-    eth: "ERC20",
-    bsc: "BEP20",
-    arbitrum: "ARBITRUM",
-    matic: "POLYGON",
-    sol: "SOLANA",
-  },
   bybit: {
     trx: "TRC20",
     eth: "ERC20",
@@ -115,7 +107,6 @@ const VENUE_CHAINS: Record<ExchangeId, Record<string, NetworkId>> = {
   hyperliquid: {},
   aster: {},
   lighter: {},
-  edgex: {},
 };
 
 /**

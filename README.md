@@ -14,8 +14,8 @@
 ![SQLite](https://img.shields.io/badge/node:sqlite-built--in-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
 ![Tailwind](https://img.shields.io/badge/Tailwind-v4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)
 
-![Venues](https://img.shields.io/badge/venues-10-8B5CF6?style=flat-square)
-![Live trading](https://img.shields.io/badge/live%20trading-8%20venues-22C55E?style=flat-square)
+![Venues](https://img.shields.io/badge/venues-8-8B5CF6?style=flat-square)
+![Live trading](https://img.shields.io/badge/live%20trading-7%20venues-22C55E?style=flat-square)
 ![Strategies](https://img.shields.io/badge/strategies-4-F59E0B?style=flat-square)
 ![Dependencies](https://img.shields.io/badge/runtime%20deps-15-64748B?style=flat-square)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-no%20telemetry-EC4899?style=flat-square)
@@ -48,15 +48,14 @@
 
 ### 📡 Market data
 
-Ten venues stream **simultaneously**:
+Eight venues stream **simultaneously**:
 
 <table>
 <tr>
 <td valign="top" width="50%">
 
-**🏛️ Centralized — 6**
+**🏛️ Centralized — 5**
 
-- Binance
 - Bybit
 - OKX
 - KuCoin
@@ -66,12 +65,11 @@ Ten venues stream **simultaneously**:
 </td>
 <td valign="top" width="50%">
 
-**⛓️ On-chain — 4**
+**⛓️ On-chain — 3**
 
 - Hyperliquid
 - Aster
 - Lighter
-- edgeX
 
 </td>
 </tr>
@@ -81,10 +79,21 @@ Rates are **normalized to the shortest funding interval** among the venues listi
 that coin, so an hourly venue is comparable with an eight-hourly one. Nothing about
 the market is persisted — on restart it is rebuilt from the venues' own feeds. 🔄
 
-> 🎯 **The loop is deliberately narrow.** Every pair is fetched over REST once a
-> minute, sorted by absolute funding rate, and **only the top ten per venue are
-> subscribed**. That keeps a small VPS viable and concentrates attention on the pairs
-> actually worth farming.
+> 🎯 **Every pair, all the time.** An instrument registry rediscovers each venue's
+> whole listing every five minutes — around **4,600 (venue, coin) pairs** — and funding
+> is subscribed for all of them. Order books are not: a top-of-book channel fires many
+> times a second per pair, so quotes follow **Book Focus** — the rows on screen, the
+> pairs a position is open in, and the widest funding gaps. A row outside that set shows
+> a funding rate but no spread until you look at it.
+>
+> Connections are **sharded** at each venue's own documented limits, roughly 28 sockets
+> in total. Two venues are special cases worth knowing: Aster serves its whole market on
+> two firehose channels, and Bitget's funding comes over REST because it publishes no
+> funding-only channel and the ticker channel carrying it gets the socket closed at full
+> market volume.
+>
+> The **Stream Fabric** console under SYSTEM shows every shard, its frame rate, its
+> retries, and what Book Focus currently holds.
 
 ### 🖥️ Three dashboards, not one filtered table
 
@@ -175,16 +184,15 @@ action is never one mis-click away.
 
 ## 🏦 Venue support
 
-Market data works for **all ten venues without any credential**. What a credential
+Market data works for **all eight venues without any credential**. What a credential
 buys differs per venue — and the differences are not a matter of remaining work. Each
 is a property of how the venue authenticates. 🔍
 
 | Venue | 🎫 Credential | 👁️ Read | 📈 Trade live |
 | --- | --- | --- | --- |
-| 🏛️ Binance, Bybit, OKX, KuCoin, Gate.io, Bitget | API key + secret (+ passphrase on OKX, KuCoin, Bitget) | ✅ | ✅ |
+| 🏛️ Bybit, OKX, KuCoin, Gate.io, Bitget | API key + secret (+ passphrase on OKX, KuCoin, Bitget) | ✅ | ✅ |
 | 💠 Hyperliquid | Wallet address; private key optional | ✅ from the address alone | ✅ with the key |
 | 🌟 Aster | Master account address + API wallet private key | ✅ key required | ✅ |
-| ⚡ edgeX | API key + secret + passphrase | ✅ | ⚠️ cancel only |
 | 🪶 Lighter | None accepted | ❌ | ❌ |
 
 🔐 Hyperliquid and Aster orders are signed **locally** with a wallet key, using
@@ -197,24 +205,6 @@ rather than attempted. ✋
 💡 Aster needs its private key even to *read*, because it has no public account
 endpoint. Hyperliquid reads from a public address alone, which is a genuinely useful
 configuration — it exposes nothing.
-
-<details>
-<summary><b>⚡ Why edgeX cannot open a position</b></summary>
-
-<br/>
-
-It authenticates reads and cancellations with an HMAC header, but *opening* a
-position needs a **second signature** from a separate trading key, over amounts
-rescaled by per-contract resolution factors inside a nested typed struct.
-
-edgeX's own documentation host does not resolve, so that payload cannot be verified
-against anything but SDK source — and a wrong scaling factor is **not** a rejected
-order, it is an order for the wrong size. 😬
-
-So the venue is readable and its resting orders can be cancelled; order entry is
-refused rather than guessed at.
-
-</details>
 
 <details>
 <summary><b>🪶 Why Lighter is market data only</b></summary>

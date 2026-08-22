@@ -1,5 +1,6 @@
 import type {
   ExchangeAdapter,
+  FundingSnapshotRow,
   IntervalRow,
   StreamUpdate,
   WsEndpointPlan,
@@ -9,20 +10,27 @@ import {
   decimalRateToPct,
   fetchJson,
   num,
-  rankByAbsRate,
 } from "@/lib/exchanges/adapter";
 
 // Verified against live payloads:
 //   REST /api/v2/mix/market/tickers?productType=USDT-FUTURES
-//        -> data[] { symbol, fundingRate, bidPr, askPr, nextFundingTime }
+//        -> data[] { symbol, fundingRate, bidPr, askPr, nextFundingTime }  759 rows
 //   REST /api/v2/mix/market/contracts?productType=USDT-FUTURES
 //        -> data[] { symbol, fundInterval }  (hours, as a string)
 //   WS   channel "ticker" (instType USDT-FUTURES)
 //        -> data[] { instId, fundingRate, nextFundingTime, bidPr, askPr, ts }
-// One topic carries funding and best bid/ask together. Bitget expects the
-// literal string "ping" as a heartbeat, not JSON. The ticker stream omits the
-// cadence, so it is read from the contracts endpoint — roughly half of Bitget's
-// listings are 4h rather than 8h.
+//
+// Bitget expects the literal string "ping" as a heartbeat, not JSON. The ticker stream
+// omits the cadence, so it is read from the contracts endpoint — roughly half of
+// Bitget's listings are 4h rather than 8h.
+//
+// Funding comes from REST here, and that is a deliberate reversal. Bitget publishes no
+// funding-only channel (`funding-time` is refused with code 30016), so funding arrives
+// bundled into the per-symbol ticker — measured live at 729 frames and 412 KB per second
+// for 200 symbols, which projects to ~2,800 frames and 1.5 MB/s across all 759. Sockets
+// carrying that were closed by the venue with code 1006 within 40–80 seconds, every
+// shard, repeatedly. One REST call returns all 759 rates, so funding is polled and the
+// ticker channel is reserved for the pairs Book Focus actually wants a quote on.
 
 interface BitgetResponse<T> {
   code?: string;
@@ -53,29 +61,61 @@ interface BitgetFrame {
   ts?: number;
 }
 
+const TICKERS_URL = "https://api.bitget.com/api/v2/mix/market/tickers?productType=USDT-FUTURES";
+
+// Book only, and narrow. A live socket accepted 400 topics, but the volume rather than
+// the count is the constraint, so this is sized for the focus set rather than the market.
 const PLAN: WsEndpointPlan = {
   key: "ticker",
-  carries: ["funding", "book"],
+  carries: ["book"],
+  mode: "topics",
   maxTopicsPerConnection: 120,
 };
 
 export const bitgetAdapter: ExchangeAdapter = {
   id: "bitget",
   defaultIntervalHours: 8,
+  fundingSource: "rest",
 
-  async fetchRanking(signal) {
+  async fetchInstruments(signal) {
     const body = await fetchJson<BitgetResponse<BitgetTicker[]>>(
       "bitget/tickers",
-      "https://api.bitget.com/api/v2/mix/market/tickers?productType=USDT-FUTURES",
+      TICKERS_URL,
       signal,
     );
-    const rows = body.data ?? [];
-    const pairs = rows.flatMap((t) => {
+    const coins = new Set<string>();
+    for (const t of body.data ?? []) {
       const coin = baseFromConcatSymbol(t.symbol ?? "");
-      if (!coin) return [];
-      return [{ coin, ratePct: decimalRateToPct(t.fundingRate) }];
+      if (coin) coins.add(coin);
+    }
+    return [...coins];
+  },
+
+  /**
+   * Every symbol's funding rate in one request.
+   *
+   * The primary source for this venue, not a fallback. `coins` is ignored: the endpoint
+   * returns the whole market anyway, and filtering it would only discard rows the store
+   * is about to want.
+   */
+  async fetchFundingSnapshot(signal) {
+    const body = await fetchJson<BitgetResponse<BitgetTicker[]>>(
+      "bitget/tickers",
+      TICKERS_URL,
+      signal,
+    );
+    return (body.data ?? []).flatMap((row): FundingSnapshotRow[] => {
+      const coin = baseFromConcatSymbol(row.symbol ?? "");
+      const ratePct = decimalRateToPct(row.fundingRate);
+      if (!coin || ratePct === null) return [];
+      return [{
+        coin,
+        ratePct,
+        nextFundingTime: num(row.nextFundingTime),
+        // The cadence comes from fetchIntervals; one source of truth for it.
+        intervalHours: null,
+      }];
     });
-    return rankByAbsRate(pairs);
   },
 
   async fetchIntervals(signal) {
@@ -144,28 +184,13 @@ export const bitgetAdapter: ExchangeAdapter = {
       const coin = baseFromConcatSymbol(row.instId ?? row.symbol ?? frame.arg?.instId ?? "");
       if (!coin) return [];
       const ts = num(row.ts) ?? frameTs;
-      const out: StreamUpdate[] = [];
-
-      const ratePct = decimalRateToPct(row.fundingRate);
-      if (ratePct !== null) {
-        out.push({
-          kind: "funding",
-          exchange: "bitget",
-          coin,
-          ratePct,
-          nextFundingTime: num(row.nextFundingTime),
-          intervalHours: null,
-          ts,
-        });
-      }
-
       const bid = num(row.bidPr);
       const ask = num(row.askPr);
-      if (bid !== null || ask !== null) {
-        out.push({ kind: "book", exchange: "bitget", coin, bid, ask, ts });
-      }
-
-      return out;
+      // Funding is deliberately dropped even though the frame carries it: REST is this
+      // venue's funding source, and letting the stream also write it would leave the
+      // store's `fromRest` flag flipping with whichever arrived last.
+      if (bid === null && ask === null) return [];
+      return [{ kind: "book", exchange: "bitget", coin, bid, ask, ts }];
     });
   },
 };

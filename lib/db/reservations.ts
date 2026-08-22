@@ -10,8 +10,8 @@ import { getDb, rowStr } from "@/lib/db/client";
  * database refuses the second claim.
  *
  * The constraint exists because it is the one the venue itself imposes. An exchange
- * nets positions per (coin, side) — if two deployments both go long BTC on Binance,
- * Binance holds a single long BTC position. Closing either hedge would then close
+ * nets positions per (coin, side) — if two deployments both go long BTC on Bybit,
+ * Bybit holds a single long BTC position. Closing either hedge would then close
  * part of the other, and on paper `applyPaperFill` would merge them into one row
  * with a blended entry price. No schema can give two deployments separate legs
  * there, so the app models the limit instead of pretending it does not exist.

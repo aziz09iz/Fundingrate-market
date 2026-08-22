@@ -6,8 +6,8 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
  * wallet signature rather than an API secret.
  *
  * The CEX venues in lib/private/signing.ts all authenticate with an HMAC over a
- * canonical string, which node:crypto covers. A DEX does not: Hyperliquid, Aster
- * v3 and edgeX all want an EIP-712 typed-data signature, which needs three things
+ * canonical string, which node:crypto covers. A DEX does not: Hyperliquid and Aster
+ * v3 both want an EIP-712 typed-data signature, which needs three things
  * Node's crypto does not provide — keccak256 (which is *not* the same permutation
  * as `sha3-256`; the padding byte differs, so Node's `sha3-256` produces a
  * different digest and a signature the venue rejects), recoverable secp256k1

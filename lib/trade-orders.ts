@@ -2,7 +2,8 @@ import type {
   AccountType,
   ExchangeId,
   ExecutionMode,
-  MarketSnapshot,
+  MarketViewRow,
+  MarketView,
   Order,
   OrderSide,
   OrderStatus,
@@ -11,8 +12,12 @@ import type {
 } from "@/lib/types";
 
 // Order plumbing for the manual trade page. Prices and spreads come from the
-// live market snapshot; submission goes through the paper or live order API,
+// live market view; submission goes through the paper or live order API,
 // which is the only place an exchange is contacted.
+//
+// These read a `MarketView` rather than the whole market: the trade page pins the
+// selected coin into its query, so the row it needs is on the page it receives even
+// when thousands of pairs would otherwise sort ahead of it.
 
 let orderSeq = 1000;
 
@@ -20,58 +25,38 @@ export function nextOrderId(): string {
   return `ORD-${++orderSeq}`;
 }
 
-/** Coins currently streamed, i.e. the union of layer 1 and layer 2. */
-export function tradablePairs(snapshot: MarketSnapshot | null): string[] {
-  return snapshot?.coins ?? [];
-}
-
 /** Best ask on a venue — the price a long entry fills at. */
 export function venueAsk(
-  snapshot: MarketSnapshot | null,
+  view: MarketView | null,
   coin: string,
   exchange: ExchangeId,
 ): number | null {
-  return findRow(snapshot, coin)?.tickers[exchange]?.ask ?? null;
+  return findRow(view, coin)?.tickers[exchange]?.ask ?? null;
 }
 
 /** Best bid on a venue — the price a short entry fills at. */
 export function venueBid(
-  snapshot: MarketSnapshot | null,
+  view: MarketView | null,
   coin: string,
   exchange: ExchangeId,
 ): number | null {
-  return findRow(snapshot, coin)?.tickers[exchange]?.bid ?? null;
+  return findRow(view, coin)?.tickers[exchange]?.bid ?? null;
 }
 
 /** Mid of the venue's own book, used only to seed a limit price field. */
 export function venueReferencePrice(
-  snapshot: MarketSnapshot | null,
+  view: MarketView | null,
   coin: string,
   exchange: ExchangeId,
 ): number | null {
-  const ticker = findRow(snapshot, coin)?.tickers[exchange];
+  const ticker = findRow(view, coin)?.tickers[exchange];
   if (!ticker) return null;
   if (ticker.bid !== null && ticker.ask !== null) return (ticker.bid + ticker.ask) / 2;
   return ticker.ask ?? ticker.bid ?? null;
 }
 
-/** First venue quoting this coin, so a form can pick a sensible default. */
-export function anyQuotedPrice(
-  snapshot: MarketSnapshot | null,
-  coin: string,
-): number | null {
-  const row = findRow(snapshot, coin);
-  if (!row) return null;
-  for (const ticker of Object.values(row.tickers)) {
-    if (!ticker) continue;
-    if (ticker.ask !== null) return ticker.ask;
-    if (ticker.bid !== null) return ticker.bid;
-  }
-  return null;
-}
-
-export function findRow(snapshot: MarketSnapshot | null, coin: string) {
-  return snapshot?.rows.find((r) => r.coin === coin) ?? null;
+export function findRow(view: MarketView | null, coin: string): MarketViewRow | null {
+  return view?.rows.find((r) => r.coin === coin) ?? null;
 }
 
 /**
@@ -80,13 +65,13 @@ export function findRow(snapshot: MarketSnapshot | null, coin: string) {
  * either quote is missing rather than guessing.
  */
 export function hedgeEntrySpreadPct(
-  snapshot: MarketSnapshot | null,
+  view: MarketView | null,
   coin: string,
   longExchange: ExchangeId,
   shortExchange: ExchangeId,
 ): number | null {
-  const longAsk = venueAsk(snapshot, coin, longExchange);
-  const shortBid = venueBid(snapshot, coin, shortExchange);
+  const longAsk = venueAsk(view, coin, longExchange);
+  const shortBid = venueBid(view, coin, shortExchange);
   if (longAsk === null || shortBid === null || longAsk <= 0) return null;
   return Number((((shortBid - longAsk) / longAsk) * 100).toFixed(4));
 }
@@ -167,13 +152,10 @@ export function queuedToOrder(queued: QueuedIntent): Order {
 }
 
 /** True once a queued hedge's two venues are close enough to submit. */
-export function intentReleasable(
-  snapshot: MarketSnapshot | null,
-  queued: QueuedIntent,
-): boolean {
+export function intentReleasable(view: MarketView | null, queued: QueuedIntent): boolean {
   if (!queued.waitLongExchange || !queued.waitShortExchange) return true;
   const spread = hedgeEntrySpreadPct(
-    snapshot,
+    view,
     queued.pair,
     queued.waitLongExchange,
     queued.waitShortExchange,

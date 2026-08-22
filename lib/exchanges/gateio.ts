@@ -1,5 +1,5 @@
 import type { ExchangeAdapter, StreamUpdate, WsEndpointPlan } from "@/lib/exchanges/adapter";
-import { decimalRateToPct, fetchJson, num, rankByAbsRate } from "@/lib/exchanges/adapter";
+import { decimalRateToPct, fetchJson, num } from "@/lib/exchanges/adapter";
 
 // Verified against live payloads:
 //   REST /api/v4/futures/usdt/contracts -> { name, funding_rate, funding_interval }
@@ -9,6 +9,13 @@ import { decimalRateToPct, fetchJson, num, rankByAbsRate } from "@/lib/exchanges
 // Gate reports funding_interval in seconds, so the cadence is exact. Its
 // tickers channel carries no bid/ask (confirmed against a live frame), so
 // book_ticker is required for quotes; the manager throttles those writes.
+//
+// `futures.tickers` accepts the payload ["!all"], and it works — until it does not.
+// Measured live, the all-market form delivers roughly 40 frames a second and the venue
+// then closes the socket with code 1006 after 30–65 seconds, regardless of heartbeat
+// cadence. A sharded 150-contract subscription on the same channel stayed open past 90
+// seconds. So both plans shard, and the firehose is left unused: a channel that has to
+// reconnect every minute is worse than one that costs a few extra sockets.
 
 interface GateContract {
   name?: string;
@@ -41,12 +48,14 @@ interface GateFrame {
 const TICKER_PLAN: WsEndpointPlan = {
   key: "tickers",
   carries: ["funding"],
+  mode: "topics",
   maxTopicsPerConnection: 150,
 };
 
 const BOOK_PLAN: WsEndpointPlan = {
   key: "book_ticker",
   carries: ["book"],
+  mode: "topics",
   maxTopicsPerConnection: 150,
 };
 
@@ -65,19 +74,19 @@ export const gateioAdapter: ExchangeAdapter = {
   id: "gateio",
   defaultIntervalHours: 8,
 
-  async fetchRanking(signal) {
+  async fetchInstruments(signal) {
     const rows = await fetchJson<GateContract[]>(
       "gateio/contracts",
       "https://api.gateio.ws/api/v4/futures/usdt/contracts",
       signal,
     );
-    const pairs = rows.flatMap((c) => {
-      if (c.in_delisting || (c.status && c.status !== "trading")) return [];
+    const coins = new Set<string>();
+    for (const c of rows) {
+      if (c.in_delisting || (c.status && c.status !== "trading")) continue;
       const coin = coinFromContract(c.name);
-      if (!coin) return [];
-      return [{ coin, ratePct: decimalRateToPct(c.funding_rate) }];
-    });
-    return rankByAbsRate(pairs);
+      if (coin) coins.add(coin);
+    }
+    return [...coins];
   },
 
   endpoints() {

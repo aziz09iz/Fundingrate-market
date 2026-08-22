@@ -95,7 +95,7 @@ function armingWarning(destination: AllowlistedDestination): string {
 }
 
 const EMPTY_DRAFT: Draft = {
-  exchange: "binance",
+  exchange: "bybit",
   token: "USDT",
   network: "TRC20",
   address: "",

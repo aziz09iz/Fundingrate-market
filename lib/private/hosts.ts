@@ -20,10 +20,6 @@
  * here deliberately — that is the point.
  */
 const ALLOWED_HOSTS: ReadonlySet<string> = new Set([
-  // Binance: futures trading, spot/wallet (withdraw + capital config), streams.
-  "fapi.binance.com",
-  "api.binance.com",
-  "fstream.binance.com",
   // Bybit: unified v5 covers trading and asset transfer on one host.
   "api.bybit.com",
   "stream.bybit.com",
@@ -43,16 +39,12 @@ const ALLOWED_HOSTS: ReadonlySet<string> = new Set([
   "ws.bitget.com",
   // Hyperliquid: /info reads and /exchange signed actions on one host.
   "api.hyperliquid.xyz",
-  // Aster: a Binance-shaped futures API. Its V3 private endpoints and the user
+  // Aster: a USDⓈ-M-shaped futures API. Its V3 private endpoints and the user
   // data stream are on the same hosts as the public ones.
   "fapi.asterdex.com",
   "fstream.asterdex.com",
   // Lighter: one host serves REST and the socket. Market data only.
   "mainnet.zklighter.elliot.ai",
-  // edgeX: quotes live on a separate host from the REST API, which also carries
-  // the signed private endpoints.
-  "edgex-prod-v2.edgex.exchange",
-  "edgex-quote-prod-v2.edgex.exchange",
   // Telegram, for outbound notifications. Not an exchange, but it goes through the
   // same gate: a corrupted setting must not be able to redirect alerts — which carry
   // position and PnL detail — to another host.

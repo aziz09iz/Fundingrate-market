@@ -19,7 +19,7 @@ import type {
   AccountType,
   ExchangeId,
   ExecutionMode,
-  MarketSnapshot,
+  MarketView,
   OrderSide,
   OrderType,
 } from "@/lib/types";
@@ -52,9 +52,10 @@ export interface OrderFormPrefill {
 interface OrderFormProps {
   pair: string;
   onPairChange: (pair: string) => void;
-  /** Coins currently streamed; the form cannot trade anything outside this. */
+  /** Coins any venue lists; the form cannot trade anything outside this. */
   availablePairs: string[];
-  snapshot: MarketSnapshot | null;
+  /** The current market page, which pins the selected pair so its quotes are present. */
+  view: MarketView | null;
   defaultExchange: ExchangeId;
   /** Which account the order is destined for, shown on the submit button. */
   account: AccountType;
@@ -85,7 +86,7 @@ export function OrderForm({
   pair,
   onPairChange,
   availablePairs,
-  snapshot,
+  view,
   defaultExchange,
   account,
   tradableVenues,
@@ -116,14 +117,14 @@ export function OrderForm({
   const longExchange = aIsLong ? exchangeA : exchangeB;
   const shortExchange = aIsLong ? exchangeB : exchangeA;
 
-  const row = findRow(snapshot, pair);
+  const row = findRow(view, pair);
   // Reference price follows the venue that would actually fill this order.
   const reference = isHedge
-    ? venueAsk(snapshot, pair, longExchange)
+    ? venueAsk(view, pair, longExchange)
     : side === "buy"
-      ? venueAsk(snapshot, pair, standardExchange)
-      : venueBid(snapshot, pair, standardExchange);
-  const fallbackReference = venueReferencePrice(snapshot, pair, standardExchange);
+      ? venueAsk(view, pair, standardExchange)
+      : venueBid(view, pair, standardExchange);
+  const fallbackReference = venueReferencePrice(view, pair, standardExchange);
   const markPrice = reference ?? fallbackReference;
 
   const price =
@@ -131,7 +132,7 @@ export function OrderForm({
   const setPrice = (value: string) => setPriceInput({ pair, value });
 
   const liveSpread = isHedge
-    ? hedgeEntrySpreadPct(snapshot, pair, longExchange, shortExchange)
+    ? hedgeEntrySpreadPct(view, pair, longExchange, shortExchange)
     : null;
   const spreadConverged =
     liveSpread !== null && Math.abs(liveSpread) <= SPREAD_RELEASE_THRESHOLD_PCT;

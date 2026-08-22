@@ -100,8 +100,8 @@ export function CredentialManager({ kind }: CredentialManagerProps) {
    */
   const statuses = useMemo(() => {
     const byId = new Map((data?.credentials ?? []).map((c) => [c.exchange, c]));
-    // Grouped by how the venue authenticates, not by whether it is a DEX: edgeX
-    // settles on-chain but issues a revocable API key, so it belongs on this page
+    // Grouped by how the venue authenticates, not by whether it is a DEX. A venue
+    // that settles on-chain but issues a revocable API key belongs on this page
     // beside the exchanges rather than on the wallet page.
     return EXCHANGES.filter((ex) => (credentialShapeOf(ex.id) === "wallet") === isDex).map<CredentialStatus>(
       (ex) =>
@@ -256,7 +256,7 @@ export function CredentialManager({ kind }: CredentialManagerProps) {
         description={
           isDex
             ? "Venues whose orders are signed with a wallet key rather than an API secret. Write-only — nothing stored here can be read back."
-            : "Venues that issue a revocable API key, including edgeX. Write-only — nothing stored here can be read back."
+            : "Venues that issue a revocable API key. Write-only — nothing stored here can be read back."
         }
         actions={
           <Button
@@ -284,8 +284,7 @@ export function CredentialManager({ kind }: CredentialManagerProps) {
           <ShieldCheck aria-hidden className="mt-0.5 size-3.5 shrink-0" />
           Secrets are never returned by any endpoint, encrypted or otherwise — only the last four
           characters of the public key are shown. Grant the narrowest permissions the venue offers,
-          and never enable withdrawals on a key used here. edgeX appears on this page rather than
-          with the wallets because it issues a revocable key of its own.
+          and never enable withdrawals on a key used here.
         </p>
       )}
 
@@ -487,12 +486,7 @@ function VenueRow({
               {status.label}
             </Badge>
           )}
-          {status.readOnlyVenue && (
-            <Badge variant="secondary" className="text-[10px] text-warning">
-              read-only venue
-            </Badge>
-          )}
-          {status.readOnly && !status.readOnlyVenue && (
+          {status.readOnly && (
             <Badge variant="secondary" className="text-[10px] text-warning">
               watch only
             </Badge>
@@ -517,14 +511,6 @@ function VenueRow({
       </div>
 
       <Separator className="my-3" />
-
-      {status.readOnlyVenue && (
-        <Alert variant="warning" className="mb-3 text-[11px]">
-          Positions, balances, open orders and cancelling work. Opening a position does not:{" "}
-          {info.name} requires a second signature from a separate trading key over a payload this app
-          cannot verify against the venue, so it is refused rather than guessed at.
-        </Alert>
-      )}
 
       {guidance && (
         <p className="mb-3 text-[11px] text-muted-foreground">{guidance.note}</p>
@@ -577,21 +563,15 @@ function VenueRow({
       </div>
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-        {status.readOnlyVenue ? (
-          <span className="text-[11px] text-muted-foreground">
-            Reads and cancels only — this venue cannot open a position from here.
-          </span>
-        ) : (
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Switch
-              checked={draft.readOnly}
-              onCheckedChange={(v) => onPatch({ readOnly: v })}
-              disabled={busy !== null}
-              aria-label="Watch only"
-            />
-            Save as watch-only (orders and transfers refused)
-          </label>
-        )}
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Switch
+            checked={draft.readOnly}
+            onCheckedChange={(v) => onPatch({ readOnly: v })}
+            disabled={busy !== null}
+            aria-label="Watch only"
+          />
+          Save as watch-only (orders and transfers refused)
+        </label>
 
         <div className="flex items-center gap-2">
           <Button

@@ -2,7 +2,6 @@
 // All amounts are expressed as a percentage (e.g. 0.0123 means 0.0123%).
 
 export type ExchangeId =
-  | "binance"
   | "bybit"
   | "okx"
   | "kucoin"
@@ -10,8 +9,7 @@ export type ExchangeId =
   | "bitget"
   | "hyperliquid"
   | "aster"
-  | "lighter"
-  | "edgex";
+  | "lighter";
 
 /**
  * Whether a venue custodies funds behind an API key (centralized) or settles
@@ -159,42 +157,176 @@ export interface VenueStatus {
   fundingFromRest?: boolean;
 }
 
-/**
- * Which layer put a (coin, venue) subscription in place.
- *
- * 1 and 2 come from the REST ranking: each venue's own top pairs, then the same
- * coins on every other venue that lists them. 3 is a claim — a pair someone is
- * holding a position in. Ranking follows the market; claims follow your exposure,
- * and a coin can leave the top pairs while you are still in it.
- */
-export type SubscriptionLayer = 1 | 2 | 3;
-
-export interface LayerAssignment {
-  exchange: ExchangeId;
-  coin: string;
-  layer: SubscriptionLayer;
-}
-
 export interface MarketSnapshot {
   rows: FundingRateRow[];
   venues: VenueStatus[];
-  layers: LayerAssignment[];
-  /** Coins currently watched, i.e. the union of layers 1, 2 and 3. */
+  /** Coins the store holds a reading for. */
   coins: string[];
   /** Pairs streamed because a position is open in them, with the holder. */
   claims?: { exchange: ExchangeId; coin: string; reason: string }[];
   /** Epoch ms this snapshot was produced. */
   updatedAt: number;
-  /** Epoch ms of the last completed REST ranking cycle. */
+  /** Epoch ms of the last completed REST pass. */
   lastPollAt: number | null;
-  config: MarketConfig;
 }
 
-export interface MarketConfig {
-  /** REST ranking cadence in seconds. */
-  pollIntervalSec: number;
-  /** How many top-funding pairs each venue contributes to layer 1. */
-  layer1CountPerExchange: number;
+/**
+ * What one dashboard view is asking for.
+ *
+ * Filtering, scoping, sorting and paging all happen server-side. Sorting is the
+ * reason: Diff FR is derived from the venues a view includes, so a client sorting a
+ * single page by Diff FR would be ordering by a number computed from a different
+ * venue set than the one it is displaying.
+ */
+export interface MarketViewQuery {
+  scope: PairScope;
+  /** Venues on screen. Empty or omitted means every venue. */
+  venues?: ExchangeId[];
+  /** Coin substring filter, case-insensitive. */
+  search?: string;
+  sort: SortKey;
+  dir: SortDir;
+  /** 1-based. Clamped to the available page count. */
+  page: number;
+  pageSize: number;
+  /**
+   * Coins to include and lead with whatever the filter and sort say. Used by the
+   * trade page so the selected pair always has a live quote.
+   */
+  pin?: string[];
+}
+
+/**
+ * One row as it travels to the browser.
+ *
+ * Deliberately narrower than `FundingRateRow`. The full row carries
+ * `normalizedRates` and the `spread` alias, which exist for the server-side
+ * derivation and the strategy engines and are read by nothing in the UI — at a
+ * hundred rows a second that is a measurable fraction of every frame for fields
+ * nobody displays.
+ */
+export interface MarketViewRow {
+  coin: string;
+  rates: Record<ExchangeId, FundingRateValue>;
+  tickers: Record<ExchangeId, Ticker | null>;
+  diffFr: number | null;
+  direction: FundingDirection | null;
+  priceSpread: PriceSpread | null;
+}
+
+export interface MarketView {
+  /** This page only, already re-scoped to the requested venues. */
+  rows: MarketViewRow[];
+  /** Rows matching the filter across the whole market. */
+  total: number;
+  /** Pairs the store is tracking overall, before any filter. */
+  universe: number;
+  page: number;
+  pageSize: number;
+  /** False when the venues in view cannot form a pair this scope accepts. */
+  pairable: boolean;
+  /**
+   * Headline figures across every matching row, not just this page.
+   *
+   * Derived server-side for the same reason the sort is: "highest funding" computed
+   * from one page of a paged market would silently mean "highest on page 1", which
+   * is a different and much less useful claim than the card makes.
+   */
+  summary: MarketSummary;
+  venues: VenueStatus[];
+  claims?: { exchange: ExchangeId; coin: string; reason: string }[];
+  updatedAt: number;
+}
+
+export interface MarketHighlight {
+  coin: string;
+  exchange: ExchangeId;
+  rate: number;
+  nextFundingTime: number;
+}
+
+export interface MarketSummary {
+  highest: MarketHighlight | null;
+  lowest: MarketHighlight | null;
+  bestDiff: { coin: string; diff: number; direction: FundingDirection | null } | null;
+}
+
+/** One websocket shard's live state, for the Stream Fabric console. */
+export type ShardState = "idle" | "connecting" | "open" | "backoff" | "closed";
+
+export interface ShardTelemetry {
+  id: string;
+  exchange: ExchangeId;
+  /** The endpoint plan key, e.g. "tickers" or "markPriceAll". */
+  plan: string;
+  mode: "firehose" | "topics";
+  carries: ("funding" | "book")[];
+  state: ShardState;
+  /** Coins this shard is subscribed to. Zero for a firehose. */
+  coins: number;
+  /** Topics those coins cost, which is not always the same number. */
+  topics: number;
+  /** Epoch ms the current socket opened, null when not open. */
+  connectedAt: number | null;
+  messages: number;
+  bytes: number;
+  /** Smoothed rates over roughly the last ten seconds. */
+  msgRate: number;
+  byteRate: number;
+  lastMessageAt: number | null;
+  reconnects: number;
+  lastError: string | null;
+  /** Epoch ms of the scheduled retry while in backoff. */
+  nextRetryAt: number | null;
+}
+
+export interface StreamFabricStatus {
+  shards: ShardTelemetry[];
+  venues: {
+    exchange: ExchangeId;
+    health: VenueHealth;
+    /** Open sockets against sockets the plan calls for. */
+    socketsOpen: number;
+    socketsExpected: number;
+    /** Coins with a funding reading, against coins the venue lists. */
+    fundingCoins: number;
+    listedCoins: number;
+    /** Coins with a live quote — the Book Focus footprint on this venue. */
+    bookCoins: number;
+    /** Where this venue's funding actually comes from. */
+    fundingSource: "stream" | "rest";
+    msgRate: number;
+    lastMessageAt: number | null;
+    lastError: string | null;
+    fundingFromRest: boolean;
+    /** Instrument refresh outcome. */
+    instrumentsAt: number | null;
+    instrumentsError: string | null;
+  }[];
+  totals: {
+    socketsOpen: number;
+    socketsExpected: number;
+    msgRate: number;
+    /** (venue, coin) pairs with a funding reading and with a live quote. */
+    fundingPairs: number;
+    bookPairs: number;
+    /** Pairs the registry knows about. */
+    trackedPairs: number;
+    coins: number;
+  };
+  focus: {
+    viewers: number;
+    entries: { coin: string; reason: "on-screen" | "position" | "top-gap"; venues: ExchangeId[] }[];
+  };
+  registryAgeMs: number | null;
+  /**
+   * How late a 500 ms timer is currently firing, smoothed.
+   *
+   * Reported because it explains a specific failure the shard table cannot: when the
+   * loop falls behind, heartbeats go out late and venues close the socket for being
+   * idle. That reads as a network problem and is actually a CPU one.
+   */
+  loopLagMs: number;
 }
 
 
@@ -352,8 +484,6 @@ export interface CredentialStatus {
   readOnly: boolean;
   /** Whether the venue needs a passphrase alongside key and secret. */
   requiresPassphrase: boolean;
-  /** True when order placement is not implemented for this venue. */
-  readOnlyVenue?: boolean;
   /** Optional operator label, so several accounts stay distinguishable. */
   label?: string | null;
   /** For a DEX venue: the public wallet address, masked. */
@@ -990,10 +1120,6 @@ export interface ApiKeyConfig {
 
 export interface GeneralSettings {
   defaultAccount: AccountType;
-  /** REST ranking cadence, mirrors MarketConfig.pollIntervalSec. */
-  pollIntervalSec: number;
-  /** Layer 1 size per venue, mirrors MarketConfig.layer1CountPerExchange. */
-  layer1CountPerExchange: number;
 }
 
 // ─── Trading domain ─────────────────────────────────────────────────────────

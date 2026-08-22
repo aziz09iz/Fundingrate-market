@@ -16,6 +16,17 @@ interface Migration {
   version: number;
   /** Constant DDL, applied in order. Ends with the user_version bump. */
   statements: readonly string[];
+  /**
+   * Optional procedural step, run inside the same transaction *before* the
+   * statements.
+   *
+   * Almost every migration here is declarative, and that is the right default.
+   * This exists for the case that genuinely is not: rewriting a JSON column
+   * requires parsing it, and a migration that must refuse to run has to look at
+   * the data before deciding. Doing either in SQL string form would be less
+   * readable and less safe than a bound loop.
+   */
+  run?: (db: DatabaseSync) => void;
 }
 
 const V1 = [
@@ -515,6 +526,175 @@ const V15 = [
   "PRAGMA user_version = 15",
 ] as const;
 
+// V16 retires two venues, Binance and edgeX, from a schema that never named them.
+//
+// No column CHECK-constrains an exchange id, so nothing here is repairing a broken
+// row — every one of these is still valid SQL. What breaks is the *meaning*: an id
+// the build no longer knows fails `requireExchange` at the API edge and disappears
+// from anything derived from EXCHANGE_IDS, which turns some rows from data into
+// litter and one kind into a silent hazard.
+//
+// Four things are cleared, and the reasoning differs for each:
+//
+//   · api_credentials — deleted, and this is the one that matters. `credentialStatuses`
+//     builds its output by walking EXCHANGE_IDS, so a row for a retired venue is
+//     fetched and then never emitted: invisible in the UI. `deleteCredentials` is only
+//     reachable through a route whose validation now rejects the id. The result is an
+//     encrypted API secret — or, for a wallet venue, an unrevocable private key — left
+//     on disk with no screen that shows it and no button that removes it.
+//
+//   · rebalance_destinations — deleted. A withdrawal address for a venue that no longer
+//     exists cannot be armed, verified or used, and its presence breaks the Destinations
+//     view and the automation config save.
+//
+//   · rebalance_config allow-lists — filtered. A stale id is inert at the engine, but
+//     `venueList` in the config route throws on an unknown venue, so the whole
+//     automation config POST fails as soon as the UI echoes the stored value back.
+//
+//   · strategy_deployments.config — filtered. Left alone this is worse than an error:
+//     `venueField` throws on the unknown id, `readStored*Config` catches it and falls
+//     back to the shipped defaults, and `enabled` lives in its own column — so a live
+//     deployment keeps running with every threshold the operator set silently replaced.
+//     A config that filters down to fewer than two venues cannot satisfy the pair
+//     requirement at all, so it is reset to defaults *and* switched off rather than left
+//     to trade on a configuration nobody chose.
+//
+// History is kept: audit_log, transfers, transfer_events, paper_funding, closed
+// positions and every trade row are the record of what happened with real money, and
+// `exchangeInfo` now renders an unknown id as a plain label so those views still read.
+//
+// The migration refuses to run while a position on a retired venue is still live. Its
+// leg reservation is what stops another deployment claiming a leg the account actually
+// holds at the venue, and freeing that while the exposure is open would be the one
+// genuinely dangerous outcome available here.
+const RETIRED_VENUES = ["binance", "edgex"] as const;
+
+const V16_STATEMENTS = [
+  "DELETE FROM api_credentials WHERE exchange IN ('binance', 'edgex')",
+  "DELETE FROM rebalance_destinations WHERE exchange IN ('binance', 'edgex')",
+
+  "PRAGMA user_version = 16",
+] as const;
+
+/** Statuses that mean the account may still hold the position at the venue. */
+const LIVE_POSITION_STATUSES = ["queued", "opening", "open", "closing"] as const;
+
+function retireVenues(db: DatabaseSync): void {
+  const placeholders = RETIRED_VENUES.map(() => "?").join(", ");
+  const statusPlaceholders = LIVE_POSITION_STATUSES.map(() => "?").join(", ");
+
+  // Refuse rather than orphan: see the block comment above.
+  const blocking = db
+    .prepare(
+      `SELECT id, account_type, coin, long_exchange, short_exchange, status FROM strategy_positions
+       WHERE status IN (${statusPlaceholders})
+         AND (long_exchange IN (${placeholders}) OR short_exchange IN (${placeholders}))`,
+    )
+    .all(...LIVE_POSITION_STATUSES, ...RETIRED_VENUES, ...RETIRED_VENUES) as Record<
+    string,
+    unknown
+  >[];
+  if (blocking.length > 0) {
+    const detail = blocking
+      .map(
+        (row) =>
+          `${String(row.account_type)} ${String(row.coin)} ` +
+          `${String(row.long_exchange)}/${String(row.short_exchange)} (${String(row.status)}, id ${String(row.id)})`,
+      )
+      .join("; ");
+    throw new Error(
+      `Cannot retire ${RETIRED_VENUES.join(" and ")} while ${blocking.length} position(s) are still ` +
+        `live on them. Close them at the venue first, then restart. Blocking: ${detail}`,
+    );
+  }
+
+  // Reservations left by positions that already finished are safe to drop.
+  db.prepare(`DELETE FROM leg_reservations WHERE exchange IN (${placeholders})`).run(
+    ...RETIRED_VENUES,
+  );
+
+  filterRebalanceAllowLists(db);
+  filterDeploymentVenues(db);
+}
+
+function filterRebalanceAllowLists(db: DatabaseSync): void {
+  const row = db
+    .prepare("SELECT allowed_sources, allowed_destinations FROM rebalance_config WHERE id = 1")
+    .get() as Record<string, unknown> | undefined;
+  if (!row) return;
+
+  const keep = (raw: unknown): string | null => {
+    if (typeof raw !== "string") return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Unparseable already means "no venues allowed" to the reader; leave it.
+      return null;
+    }
+    if (!Array.isArray(parsed)) return null;
+    const filtered = parsed.filter(
+      (v) => typeof v === "string" && !(RETIRED_VENUES as readonly string[]).includes(v),
+    );
+    return filtered.length === parsed.length ? null : JSON.stringify(filtered);
+  };
+
+  const sources = keep(row.allowed_sources);
+  const destinations = keep(row.allowed_destinations);
+  if (sources === null && destinations === null) return;
+
+  db.prepare(
+    "UPDATE rebalance_config SET allowed_sources = ?, allowed_destinations = ? WHERE id = 1",
+  ).run(
+    sources ?? (typeof row.allowed_sources === "string" ? row.allowed_sources : "[]"),
+    destinations ?? (typeof row.allowed_destinations === "string" ? row.allowed_destinations : "[]"),
+  );
+}
+
+function filterDeploymentVenues(db: DatabaseSync): void {
+  const rows = db
+    .prepare("SELECT id, config FROM strategy_deployments")
+    .all() as Record<string, unknown>[];
+
+  for (const row of rows) {
+    const raw = typeof row.config === "string" ? row.config : "";
+    if (!raw) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null) continue;
+    const config = parsed as Record<string, unknown>;
+    const venues = config.venues;
+    if (!Array.isArray(venues)) continue;
+
+    const kept = venues.filter(
+      (v) => typeof v === "string" && !(RETIRED_VENUES as readonly string[]).includes(v),
+    );
+    if (kept.length === venues.length) continue;
+
+    if (kept.length < 2) {
+      // A hedge needs two legs, so this config cannot be repaired by filtering.
+      // Dropping the venue list and leaving it enabled would start it trading on
+      // shipped defaults, which is exactly the silent substitution being avoided.
+      delete config.venues;
+      db.prepare("UPDATE strategy_deployments SET config = ?, enabled = 0 WHERE id = ?").run(
+        JSON.stringify(config),
+        row.id as string,
+      );
+      continue;
+    }
+
+    config.venues = kept;
+    db.prepare("UPDATE strategy_deployments SET config = ? WHERE id = ?").run(
+      JSON.stringify(config),
+      row.id as string,
+    );
+  }
+}
+
 const MIGRATIONS: readonly Migration[] = [
   { version: 1, statements: V1 },
   { version: 2, statements: V2 },
@@ -531,6 +711,7 @@ const MIGRATIONS: readonly Migration[] = [
   { version: 13, statements: V13 },
   { version: 14, statements: V14 },
   { version: 15, statements: V15 },
+  { version: 16, statements: V16_STATEMENTS, run: retireVenues },
 ];
 
 export function runMigrations(db: DatabaseSync): void {
@@ -541,6 +722,7 @@ export function runMigrations(db: DatabaseSync): void {
     if (migration.version <= current) continue;
     db.prepare("BEGIN IMMEDIATE").run();
     try {
+      migration.run?.(db);
       for (const statement of migration.statements) {
         db.prepare(statement).run();
       }

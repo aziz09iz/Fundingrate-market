@@ -129,7 +129,7 @@ export type QueueResult =
  * transaction.
  *
  * The reservation is the interesting part. A venue nets positions per (coin, side),
- * so two deployments that both go long BTC on Binance would share one exchange
+ * so two deployments that both go long BTC on Bybit would share one exchange
  * position — and closing either hedge would close part of the other. Claiming the
  * legs atomically with the insert means two deployments racing for the same leg
  * cannot both believe they won.

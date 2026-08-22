@@ -1,5 +1,5 @@
 import type { ExchangeAdapter, StreamUpdate, WsEndpointPlan } from "@/lib/exchanges/adapter";
-import { decimalRateToPct, num, rankByAbsRate } from "@/lib/exchanges/adapter";
+import { decimalRateToPct, num } from "@/lib/exchanges/adapter";
 
 // Verified against live payloads:
 //   POST /info { type: "metaAndAssetCtxs" } -> [ { universe: [{name}] },
@@ -30,16 +30,21 @@ interface HlFrame {
   };
 }
 
+// `allMids` is Hyperliquid's only all-market channel and it carries neither funding
+// nor a bid/ask pair, so it is not used: a mid price cannot answer what a leg would
+// actually fill at. Both channels stay per-coin, one subscribe frame each.
 const CTX_PLAN: WsEndpointPlan = {
   key: "activeAssetCtx",
   carries: ["funding"],
-  maxTopicsPerConnection: 120,
+  mode: "topics",
+  maxTopicsPerConnection: 150,
 };
 
 const BOOK_PLAN: WsEndpointPlan = {
   key: "l2Book",
   carries: ["book"],
-  maxTopicsPerConnection: 120,
+  mode: "topics",
+  maxTopicsPerConnection: 100,
 };
 
 /** Hyperliquid settles every hour on the hour. */
@@ -52,23 +57,20 @@ export const hyperliquidAdapter: ExchangeAdapter = {
   id: "hyperliquid",
   defaultIntervalHours: 1,
 
-  async fetchRanking(signal) {
+  async fetchInstruments(signal) {
     const res = await fetch("https://api.hyperliquid.xyz/info", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "metaAndAssetCtxs" }),
+      body: JSON.stringify({ type: "meta" }),
       signal,
     });
     if (!res.ok) throw new Error(`hyperliquid/info: HTTP ${res.status}`);
-    const body = (await res.json()) as [{ universe?: HlUniverseEntry[] }, HlAssetCtx[]];
-    const universe = body?.[0]?.universe ?? [];
-    const ctxs = body?.[1] ?? [];
-    const pairs = universe.flatMap((entry, i) => {
-      const coin = entry.name;
-      if (!coin) return [];
-      return [{ coin, ratePct: decimalRateToPct(ctxs[i]?.funding) }];
-    });
-    return rankByAbsRate(pairs);
+    const body = (await res.json()) as { universe?: HlUniverseEntry[] };
+    const coins = new Set<string>();
+    for (const entry of body?.universe ?? []) {
+      if (entry.name) coins.add(entry.name);
+    }
+    return [...coins];
   },
 
   endpoints() {

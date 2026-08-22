@@ -7,7 +7,6 @@ import {
   deleteCredentials,
   encryptionAvailable,
   getCredentials,
-  isReadOnlyVenue,
   recordVerification,
   requiresPassphrase,
   saveCredentials,
@@ -165,8 +164,7 @@ export async function POST(request: Request) {
         ? requireString(parsed.passphrase, "passphrase", 200)
         : undefined;
     const label = optionalString(parsed.label, 60) ?? null;
-    // Venues without order support stay read-only whatever the caller asks.
-    const readOnly = requireBoolean(parsed.readOnly, true) || isReadOnlyVenue(exchange);
+    const readOnly = requireBoolean(parsed.readOnly, true);
     const enabled = requireBoolean(parsed.enabled, true);
 
     saveCredentials({ exchange, apiKey, apiSecret, passphrase, label, readOnly, enabled });

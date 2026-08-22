@@ -13,16 +13,15 @@ import { baseFromConcatSymbol, num } from "@/lib/exchanges/adapter";
 /**
  * Aster, authenticated.
  *
- * The response shapes here are Binance's, because Aster's futures API is a clone
- * of it down to the field names — so this file reads much like
- * `lib/private/binance.ts`. What differs is entirely in `aster-signing.ts`: there
+ * The response shapes here follow the widely cloned USDⓈ-M futures API, down to the
+ * field names. What differs is entirely in `aster-signing.ts`: there
  * is no API secret, and every request is signed with an API wallet's Ethereum key
  * over EIP-712.
  *
  * The wallet surface is deliberately absent. Aster's deposits and withdrawals are
- * on-chain transfers rather than exchange withdrawals, so there is no equivalent of
- * `/sapi/v1/capital/withdraw/apply` to call and no venue-reported deposit address
- * to cross-check a destination against. Without that cross-check the rebalancing
+ * on-chain transfers rather than exchange withdrawals, so there is no withdrawal
+ * endpoint to call and no venue-reported deposit address to cross-check a
+ * destination against. Without that cross-check the rebalancing
  * path would be sending real funds to an address nothing has verified, so Aster
  * takes part in trading only: `supportsWallet` is unset, which keeps it out of the
  * treasury source and destination lists without any caller special-casing it.
@@ -214,7 +213,7 @@ export const asterPrivate: PrivateAdapter = {
   },
 
   /**
-   * The user data stream, keyed by a listenKey like Binance's.
+   * The user data stream, keyed by a listenKey.
    *
    * Aster expires the key after 60 minutes and a PUT extends it, so the keepalive
    * runs well inside that window.

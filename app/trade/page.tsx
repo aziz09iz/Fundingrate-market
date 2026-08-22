@@ -14,7 +14,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { OrderForm, type OrderFormPrefill } from "@/components/trade/order-form";
 import { VenueQuotes } from "@/components/trade/venue-quotes";
 import { OpenOrders } from "@/components/trade/open-orders";
-import { useMarketStream, type StreamStatus } from "@/lib/hooks/use-market-stream";
+import { useMarketView, type StreamStatus } from "@/lib/hooks/use-market-view";
 import { apiFetch } from "@/lib/api/client";
 import {
   findRow,
@@ -32,7 +32,8 @@ import type {
   CredentialStatus,
   ExchangeId,
   LiveAccountSnapshot,
-  MarketSnapshot,
+  MarketView,
+  MarketViewQuery,
   Order,
 } from "@/lib/types";
 import { EXCHANGE_IDS, cn, exchangeName, formatPrice, formatSignedPct } from "@/lib/utils";
@@ -245,13 +246,13 @@ function TradeWorkspace({ initialPair, initialAccount, prefill }: TradeWorkspace
   );
 
   /**
-   * Releases queued hedges as each snapshot arrives — an external event, rather
+   * Releases queued hedges as each frame arrives — an external event, rather
    * than an effect watching state.
    */
   const releaseQueued = useCallback(
-    (snap: MarketSnapshot) => {
+    (frame: MarketView) => {
       setQueued((prev) => {
-        const ready = prev.filter((q) => intentReleasable(snap, q));
+        const ready = prev.filter((q) => intentReleasable(frame, q));
         if (ready.length === 0) return prev;
         const readyIds = new Set(ready.map((q) => q.id));
         // Fire outside the updater so React state stays synchronous here.
@@ -274,7 +275,48 @@ function TradeWorkspace({ initialPair, initialAccount, prefill }: TradeWorkspace
     [runSubmission],
   );
 
-  const { snapshot, status } = useMarketStream({ onSnapshot: releaseQueued });
+  /**
+   * Every coin any venue lists, for the pair picker.
+   *
+   * Read from the instrument registry rather than from the market frame, because the
+   * frame carries one page of rows — a picker built from it would offer only whatever
+   * happened to sort onto that page.
+   */
+  const [availablePairs, setAvailablePairs] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/market/instruments", { cache: "no-store" });
+        if (!res.ok) return;
+        const body = (await res.json()) as { coins?: string[] };
+        if (!cancelled) setAvailablePairs(body.coins ?? []);
+      } catch {
+        // The picker stays empty until the next load; the pair in the URL still works.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const pair = availablePairs.includes(requestedPair) ? requestedPair : (availablePairs[0] ?? "");
+
+  // The selected pair is pinned into the query, so its row and quotes are on the page
+  // this client receives however the market happens to sort.
+  const viewQuery = useMemo<MarketViewQuery>(
+    () => ({
+      scope: "cross",
+      sort: "diffFr",
+      dir: "desc",
+      page: 1,
+      pageSize: 25,
+      pin: pair ? [pair] : undefined,
+    }),
+    [pair],
+  );
+
+  const { view, status } = useMarketView(viewQuery, { onView: releaseQueued });
 
   useEffect(() => {
     void (async () => {
@@ -301,10 +343,7 @@ function TradeWorkspace({ initialPair, initialAccount, prefill }: TradeWorkspace
     }
   }, [loadOrders, loadCredentials, loadPaperAccount]);
 
-  const availablePairs = useMemo(() => snapshot?.coins ?? [], [snapshot]);
-  // Only streamed coins are tradable, so fall back to the first available one.
-  const pair = availablePairs.includes(requestedPair) ? requestedPair : (availablePairs[0] ?? "");
-  const row = findRow(snapshot, pair);
+  const row = findRow(view, pair);
 
   const tradableVenues = useMemo(
     () =>
@@ -463,8 +502,8 @@ function TradeWorkspace({ initialPair, initialAccount, prefill }: TradeWorkspace
               pair={pair}
               onPairChange={setRequestedPair}
               availablePairs={availablePairs}
-              snapshot={snapshot}
-              defaultExchange={prefill?.longExchange ?? "binance"}
+              view={view}
+              defaultExchange={prefill?.longExchange ?? "bybit"}
               account={account}
               availableUsd={availableUsd}
               tradableVenues={account === "live" ? tradableVenues : undefined}
@@ -494,7 +533,7 @@ function TradeWorkspace({ initialPair, initialAccount, prefill }: TradeWorkspace
       <PairSwitcher
         pairs={availablePairs}
         active={pair}
-        snapshot={snapshot}
+        view={view}
         onSelect={setRequestedPair}
       />
 
@@ -512,7 +551,7 @@ function TradeWorkspace({ initialPair, initialAccount, prefill }: TradeWorkspace
         confirmLabel="Send order"
         destructive
         warning="This is a real order with real funds. Once it fills it cannot be undone."
-        details={pending ? intentDetails(pending, snapshot) : []}
+        details={pending ? intentDetails(pending, view) : []}
         // Above the threshold the amount has to be retyped, so a large order is a
         // decision rather than the same single click as a small one.
         challenge={
@@ -555,7 +594,7 @@ function formatUsdRounded(value: number): string {
 /** Flattens the intents into the exact numbers being sent, leg by leg. */
 function intentDetails(
   intents: OrderIntent[],
-  snapshot: MarketSnapshot | null,
+  view: MarketView | null,
 ): { label: string; value: string; emphasis?: boolean }[] {
   const details: { label: string; value: string; emphasis?: boolean }[] = [];
   intents.forEach((intent, i) => {
@@ -581,7 +620,7 @@ function intentDetails(
 
   if (intents.length === 2 && intents[0].waitLongExchange && intents[0].waitShortExchange) {
     const spread = hedgeEntrySpreadPct(
-      snapshot,
+      view,
       intents[0].pair,
       intents[0].waitLongExchange,
       intents[0].waitShortExchange,
@@ -595,27 +634,29 @@ function intentDetails(
   return details;
 }
 
-/** Quick access to the streamed coins, ordered by the biggest funding gap. */
+/** Quick access to the tradable coins, ordered by the biggest funding gap on screen. */
 function PairSwitcher({
   pairs,
   active,
-  snapshot,
+  view,
   onSelect,
 }: {
   pairs: string[];
   active: string;
-  snapshot: MarketSnapshot | null;
+  view: MarketView | null;
   onSelect: (pair: string) => void;
 }) {
   const ordered = useMemo(() => {
-    const byDiff = new Map((snapshot?.rows ?? []).map((r) => [r.coin, Math.abs(r.diffFr ?? 0)]));
+    // The frame carries one page, so this ranks the coins it does know and leaves the
+    // rest in listing order rather than pretending to rank the whole market.
+    const byDiff = new Map((view?.rows ?? []).map((r) => [r.coin, Math.abs(r.diffFr ?? 0)]));
     return [...pairs].sort((a, b) => (byDiff.get(b) ?? 0) - (byDiff.get(a) ?? 0)).slice(0, 24);
-  }, [pairs, snapshot]);
+  }, [pairs, view]);
 
   if (ordered.length === 0) {
     return (
       <p className="text-center text-xs text-muted-foreground">
-        Waiting for the market stream to report watched pairs…
+        Waiting for the venues to report their listed pairs…
       </p>
     );
   }

@@ -125,7 +125,7 @@ export class PrivateWsManager {
           this.send(socket, target.heartbeat!.message);
         }, target.heartbeat.intervalMs);
       }
-      // Binance drops the stream unless its listenKey is refreshed.
+      // Aster drops the stream unless its listenKey is refreshed.
       if (target.keepAlive) {
         connection.keepAlive = setInterval(() => {
           void target.keepAlive!.run().catch((err) => {

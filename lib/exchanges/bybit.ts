@@ -1,11 +1,5 @@
 import type { ExchangeAdapter, StreamUpdate, WsEndpointPlan } from "@/lib/exchanges/adapter";
-import {
-  baseFromConcatSymbol,
-  decimalRateToPct,
-  fetchJson,
-  num,
-  rankByAbsRate,
-} from "@/lib/exchanges/adapter";
+import { baseFromConcatSymbol, decimalRateToPct, fetchJson, num } from "@/lib/exchanges/adapter";
 
 // Verified against live payloads: one `tickers.SYMBOL` topic carries funding
 // rate, nextFundingTime, fundingIntervalHour, bid1Price and ask1Price together.
@@ -30,31 +24,35 @@ interface BybitFrame {
   data?: BybitTicker;
 }
 
+// One channel carries funding and book together, so subscribing Bybit's whole
+// market inherently streams its books too — there is no funding-only variant to
+// pick. Measured on a live socket: 400 topics were accepted on one connection with
+// every ack `success: true`, so 200 leaves the margin the venue's own docs suggest.
 const PLAN: WsEndpointPlan = {
   key: "linear",
   carries: ["funding", "book"],
-  // Bybit allows up to 10 args per subscribe frame but many topics per socket.
-  maxTopicsPerConnection: 180,
+  mode: "topics",
+  maxTopicsPerConnection: 200,
 };
 
 export const bybitAdapter: ExchangeAdapter = {
   id: "bybit",
   defaultIntervalHours: 8,
 
-  async fetchRanking(signal) {
+  async fetchInstruments(signal) {
     const body = await fetchJson<BybitTickersResponse>(
       "bybit/tickers",
       "https://api.bybit.com/v5/market/tickers?category=linear",
       signal,
     );
     const list = body.result?.list ?? [];
-    const pairs = list.flatMap((t) => {
-      if (!t.symbol) return [];
+    const coins = new Set<string>();
+    for (const t of list) {
+      if (!t.symbol) continue;
       const coin = baseFromConcatSymbol(t.symbol);
-      if (!coin) return [];
-      return [{ coin, ratePct: decimalRateToPct(t.fundingRate) }];
-    });
-    return rankByAbsRate(pairs);
+      if (coin) coins.add(coin);
+    }
+    return [...coins];
   },
 
   endpoints() {

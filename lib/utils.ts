@@ -103,7 +103,6 @@ export function formatAgo(ts: number | null, nowMs: number = Date.now()): string
  * why they are listed apart rather than mixed into one table.
  */
 export const EXCHANGES: ExchangeInfo[] = [
-  { id: "binance", name: "Binance", accent: "text-amber-400", defaultIntervalHours: 8, venueType: "cex" },
   { id: "bybit", name: "Bybit", accent: "text-yellow-300", defaultIntervalHours: 8, venueType: "cex" },
   { id: "okx", name: "OKX", accent: "text-sky-400", defaultIntervalHours: 8, venueType: "cex" },
   { id: "kucoin", name: "KuCoin", accent: "text-emerald-400", defaultIntervalHours: 8, venueType: "cex" },
@@ -114,7 +113,6 @@ export const EXCHANGES: ExchangeInfo[] = [
   // metadata; 8h is only the placeholder until that arrives.
   { id: "aster", name: "Aster", accent: "text-orange-300", defaultIntervalHours: 8, venueType: "dex" },
   { id: "lighter", name: "Lighter", accent: "text-lime-300", defaultIntervalHours: 1, venueType: "dex" },
-  { id: "edgex", name: "edgeX", accent: "text-indigo-300", defaultIntervalHours: 4, venueType: "dex" },
 ];
 
 export const EXCHANGE_IDS: ExchangeId[] = EXCHANGES.map((e) => e.id);
@@ -128,8 +126,27 @@ export function exchangeIdsOfType(type: VenueType): ExchangeId[] {
   return exchangesOfType(type).map((e) => e.id);
 }
 
+/**
+ * Venue metadata, with a readable placeholder for an id this build no longer
+ * supports.
+ *
+ * This used to end in a non-null assertion, which was true only for as long as
+ * the venue list never shrank. Delisting one turns every historical row that
+ * names it — a closed position, a completed transfer, an audit entry — into a
+ * `TypeError` in whichever view renders it, because the record of what happened
+ * with real money outlives the integration that produced it. A muted label is a
+ * correct answer to "what venue was this"; a crash is not.
+ */
 export function exchangeInfo(id: ExchangeId): ExchangeInfo {
-  return EXCHANGES.find((e) => e.id === id)!;
+  const known = EXCHANGES.find((e) => e.id === id);
+  if (known) return known;
+  return {
+    id,
+    name: id,
+    accent: "text-muted-foreground",
+    defaultIntervalHours: 8,
+    venueType: "cex",
+  };
 }
 
 export function exchangeName(id: ExchangeId): string {
@@ -143,12 +160,12 @@ export function venueTypeOf(id: ExchangeId): VenueType {
 /**
  * Venues authenticated with a wallet private key rather than an issued API secret.
  *
- * Deliberately not the same question as `venueTypeOf`. All four DEX venues settle
+ * Deliberately not the same question as `venueTypeOf`. All three DEX venues settle
  * on-chain, but only Hyperliquid and Aster are *signed for* with a wallet key —
- * edgeX issues a revocable API key, secret and passphrase from its own web app, so
- * it belongs on the API-key form. Deriving the credential shape from the venue type
- * would show edgeX a wallet field and invite pasting a private key into something
- * that never reads one.
+ * Lighter is market data only here, so it never reaches a signing path at all.
+ * Keeping the two questions apart means a venue that settles on-chain but issues a
+ * revocable key would land on the API-key form rather than being shown a wallet
+ * field and inviting a private key into something that never reads one.
  *
  * This lives here rather than beside the credential store so the settings pages can
  * group venues without importing anything that touches the database.

@@ -1,5 +1,5 @@
 import type { ExchangeAdapter, StreamUpdate, WsEndpointPlan } from "@/lib/exchanges/adapter";
-import { decimalRateToPct, fetchJson, num, rankByAbsRate } from "@/lib/exchanges/adapter";
+import { decimalRateToPct, fetchJson, num } from "@/lib/exchanges/adapter";
 
 // Verified against live payloads:
 //   REST /api/v5/public/funding-rate?instId=ANY returns every SWAP at once,
@@ -36,16 +36,22 @@ interface OkxTickerRow {
   ts?: string;
 }
 
+// A single `instType: SWAP` subscription was tried and refused with code 60018, so
+// there is no firehose here — both channels are per-instrument. A live socket
+// accepted 400 topics, so 200 for funding and 150 for the noisier ticker channel
+// stay comfortably inside that.
 const FUNDING_PLAN: WsEndpointPlan = {
   key: "funding",
   carries: ["funding"],
-  maxTopicsPerConnection: 120,
+  mode: "topics",
+  maxTopicsPerConnection: 200,
 };
 
 const BOOK_PLAN: WsEndpointPlan = {
   key: "tickers",
   carries: ["book"],
-  maxTopicsPerConnection: 120,
+  mode: "topics",
+  maxTopicsPerConnection: 150,
 };
 
 function instId(coin: string): string {
@@ -63,20 +69,19 @@ export const okxAdapter: ExchangeAdapter = {
   id: "okx",
   defaultIntervalHours: 8,
 
-  async fetchRanking(signal) {
+  async fetchInstruments(signal) {
     // instId is required but OKX returns the full SWAP set for any value.
     const body = await fetchJson<OkxResponse<OkxFundingRow[]>>(
       "okx/funding-rate",
       "https://www.okx.com/api/v5/public/funding-rate?instId=ANY",
       signal,
     );
-    const rows = body.data ?? [];
-    const pairs = rows.flatMap((r) => {
-      const coin = coinFromInstId(r.instId);
-      if (!coin) return [];
-      return [{ coin, ratePct: decimalRateToPct(r.fundingRate) }];
-    });
-    return rankByAbsRate(pairs);
+    const coins = new Set<string>();
+    for (const row of body.data ?? []) {
+      const coin = coinFromInstId(row.instId);
+      if (coin) coins.add(coin);
+    }
+    return [...coins];
   },
 
   endpoints() {

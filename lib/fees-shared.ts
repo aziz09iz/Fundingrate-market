@@ -9,7 +9,6 @@ import type { ExchangeId } from "@/lib/types";
  * for UI hints and as the fallback when no row exists yet.
  */
 export const DEFAULT_TAKER_FEES: Record<ExchangeId, number> = {
-  binance: 0.05,
   bybit: 0.055,
   okx: 0.05,
   kucoin: 0.06,
@@ -21,5 +20,4 @@ export const DEFAULT_TAKER_FEES: Record<ExchangeId, number> = {
   // describe a zero-fee model. Left at zero rather than padded with a guess: an
   // invented fee would understate every spread it touches.
   lighter: 0,
-  edgex: 0.038,
 };

@@ -1,11 +1,18 @@
 import { getMarketRuntime } from "@/lib/market/runtime";
+import { parseViewQuery, parseViewerId } from "@/lib/market/query";
 
-// Streams live market snapshots to the browser. The websockets to the venues
-// live on the server, so every tab shares one set of upstream connections — and
-// one serialised frame per store version, built by the runtime rather than here.
+// Streams one page of the live market to the browser. The websockets to the venues
+// live on the server, so every tab shares one set of upstream connections — and one
+// serialised frame per store version per distinct view, built by the runtime rather
+// than here.
 //
-// This endpoint is public and unauthenticated, which is fine for public market
-// data. Do not extend it to anything key-derived without adding auth first.
+// Each push also renews this connection's Book Focus lease, which is what keeps bid/ask
+// subscribed for the rows on screen. Renewing on push rather than on connect means a
+// client that stops reading releases its quotes without having to say goodbye, which a
+// closed laptop lid never does.
+//
+// This endpoint is public and unauthenticated, which is fine for public market data.
+// Do not extend it to anything key-derived without adding auth first.
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -15,6 +22,9 @@ const KEEPALIVE = new TextEncoder().encode(": keepalive\n\n");
 
 export async function GET(request: Request) {
   const market = getMarketRuntime();
+  const url = new URL(request.url);
+  const query = parseViewQuery(url);
+  const viewerId = parseViewerId(url);
 
   let closed = false;
   let tick: NodeJS.Timeout | null = null;
@@ -31,12 +41,17 @@ export async function GET(request: Request) {
    * serialising a full snapshot forever for a client that no longer existed. That
    * is the one defect here that grew with uptime rather than with load: every
    * reload or proxy timeout could add another.
+   *
+   * The focus lease is dropped here too. It would expire on its own within a minute,
+   * but releasing it now means closing a tab stops its order-book subscriptions
+   * immediately rather than at the end of the TTL.
    */
   const cleanup = (controller?: ReadableStreamDefaultController<Uint8Array>) => {
     if (closed) return;
     closed = true;
     if (tick) clearInterval(tick);
     tick = null;
+    market.releaseViewer(viewerId);
     try {
       controller?.close();
     } catch {
@@ -58,14 +73,14 @@ export async function GET(request: Request) {
         }
       };
 
-      // First frame is always a full snapshot so a fresh tab renders at once.
-      const first = market.snapshotFrame();
+      // First frame is always a full view so a fresh tab renders at once.
+      const first = market.viewFrame(viewerId, query);
       lastVersion = first.version;
       push(first.bytes);
 
       tick = setInterval(() => {
         if (closed) return;
-        const frame = market.snapshotFrame();
+        const frame = market.viewFrame(viewerId, query);
         if (frame.version === lastVersion) {
           // Comment frame keeps proxies from closing an idle connection.
           push(KEEPALIVE);

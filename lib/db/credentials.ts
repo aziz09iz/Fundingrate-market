@@ -27,18 +27,7 @@ import { EXCHANGE_IDS, credentialShapeOf, exchangeInfo } from "@/lib/utils";
  */
 
 /** Venues whose API requires a passphrase alongside key and secret. */
-const PASSPHRASE_VENUES: ReadonlySet<ExchangeId> = new Set(["okx", "kucoin", "bitget", "edgex"]);
-
-/**
- * Venues this app will not place an order on, whatever the credential says.
- *
- * edgeX authenticates reads and cancellations with an HMAC key, but opening a
- * position additionally needs an EIP-712 "L2 signature" from a separate trading
- * key over a payload of resolution-scaled amounts that cannot be verified against
- * the venue from here. So the credential is accepted and used for reads, and the
- * order path refuses it.
- */
-const READ_ONLY_VENUES: ReadonlySet<ExchangeId> = new Set(["edgex"]);
+const PASSPHRASE_VENUES: ReadonlySet<ExchangeId> = new Set(["okx", "kucoin", "bitget"]);
 
 /**
  * Venues wired for market data only, with no authenticated integration at all.
@@ -69,10 +58,6 @@ export function requiresPassphrase(exchange: ExchangeId): boolean {
   return PASSPHRASE_VENUES.has(exchange);
 }
 
-export function isReadOnlyVenue(exchange: ExchangeId): boolean {
-  return READ_ONLY_VENUES.has(exchange);
-}
-
 /** True when this app can authenticate against the venue at all. */
 export function accountSupported(exchange: ExchangeId): boolean {
   return !NO_ACCOUNT_VENUES.has(exchange);
@@ -80,8 +65,8 @@ export function accountSupported(exchange: ExchangeId): boolean {
 
 /** Which credential shape a venue takes. Derived from the venue, never supplied. */
 export function credentialKind(exchange: ExchangeId): CredentialKind {
-  // "dex" here means "signed for with a wallet key", which is not every DEX — see
-  // credentialShapeOf for why edgeX is on the API-key form.
+  // "dex" here means "signed for with a wallet key", which is not automatically
+  // every DEX — see credentialShapeOf for why the two questions stay separate.
   return credentialShapeOf(exchange) === "wallet" ? "dex" : "cex";
 }
 
@@ -139,7 +124,7 @@ export function getCredentials(exchange: ExchangeId): Credentials | null {
       passphrase: passCipher ? decryptSecret(passCipher) : undefined,
       walletAddress:
         kind === "dex" ? decryptSecret(rowStr(row.api_key_cipher)) : undefined,
-      readOnly: rowBool(row.read_only) || isReadOnlyVenue(exchange),
+      readOnly: rowBool(row.read_only),
     };
   } catch {
     // A changed password must not crash the caller; treat the credential as
@@ -177,9 +162,8 @@ export function credentialStatuses(): CredentialStatus[] {
       accountSupported: accountSupported(exchange),
       keyTail: row ? rowStr(row.key_tail, "") || null : null,
       enabled: row ? rowBool(row.enabled) : false,
-      readOnly: row ? rowBool(row.read_only) || isReadOnlyVenue(exchange) : isReadOnlyVenue(exchange),
+      readOnly: row ? rowBool(row.read_only) : false,
       requiresPassphrase: requiresPassphrase(exchange),
-      readOnlyVenue: isReadOnlyVenue(exchange),
       label: row ? rowStr(row.label, "") || null : null,
       walletAddressMasked,
       lastVerifiedAt: row ? rowNum(row.last_verified_at, 0) || null : null,
@@ -231,8 +215,7 @@ export function saveCredentials(input: SaveCredentialInput): void {
   const walletCipher = kind === "dex" ? keyCipher : null;
   // A DEX wallet with no private key cannot sign, so it is read-only whatever the
   // caller asked for.
-  const readOnly =
-    input.readOnly || isReadOnlyVenue(input.exchange) || (kind === "dex" && !input.apiSecret);
+  const readOnly = input.readOnly || (kind === "dex" && !input.apiSecret);
 
   inTransaction((db) => {
     db.prepare(

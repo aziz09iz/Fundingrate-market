@@ -34,13 +34,6 @@ export interface BookUpdate {
 
 export type StreamUpdate = FundingUpdate | BookUpdate;
 
-/** A candidate pair from the REST ranking pass. */
-export interface RankedPair {
-  coin: string;
-  /** Absolute funding rate percentage, used only to order candidates. */
-  absRatePct: number;
-}
-
 /** Funding for one coin as reported by REST, used only as a stream fallback. */
 export interface FundingSnapshotRow {
   coin: string;
@@ -66,15 +59,34 @@ export interface IntervalRow {
 }
 
 /**
- * A websocket endpoint plus the topics it carries. Venues that bundle funding
- * and book data in one channel report `carries: ["funding", "book"]`.
+ * A websocket endpoint plus what it carries.
+ *
+ * `mode` is the important field. A `firehose` plan is one channel that delivers the
+ * venue's whole market on a single socket: it is never sharded, and its
+ * `subscribeMessages` is called once with an empty coin list, returning whatever
+ * all-market frame the venue wants. A `topics` plan is subscribed per coin and
+ * sharded at `maxTopicsPerConnection`.
+ *
+ * Mixing the two under one shape matters because the alternative is a per-venue
+ * special case in the manager, and the manager is where a mistake means either a
+ * silent socket or a subscription the venue rejects wholesale.
  */
 export interface WsEndpointPlan {
   /** Stable key so the manager can track connections across resubscribes. */
   key: string;
   carries: ("funding" | "book")[];
-  /** Max topics one socket should hold before the manager shards. */
+  mode: "firehose" | "topics";
+  /**
+   * Max coins one socket should hold before the manager shards. Ignored for a
+   * firehose plan, which is always exactly one socket.
+   */
   maxTopicsPerConnection: number;
+  /**
+   * Topics each coin costs, when it is more than one. Aster needs two streams per
+   * coin; a venue that caps *topics* rather than symbols needs this to shard
+   * correctly.
+   */
+  topicsPerCoin?: number;
 }
 
 export interface WsConnectionTarget {
@@ -94,10 +106,30 @@ export interface ExchangeAdapter {
   defaultIntervalHours: number;
 
   /**
-   * REST pass used only to pick which pairs to watch. Its funding numbers rank
-   * candidates and are never displayed — the UI shows stream values only.
+   * Where this venue's funding rates come from.
+   *
+   * `stream` is the default and the better answer when a venue offers it. `rest` means
+   * the venue only publishes funding on a channel whose volume is dominated by
+   * something else — Bitget bundles funding into a per-symbol ticker that pushes ~2,800
+   * frames and 1.5 MB per second across its whole market, and sockets carrying that
+   * much are dropped by the venue within the minute. One REST call returning every
+   * symbol's rate is both more stable and two orders of magnitude cheaper, and funding
+   * moves slowly enough that polling it loses nothing.
+   *
+   * A `rest` venue still subscribes its book channel, but only for the pairs Book Focus
+   * asks for.
    */
-  fetchRanking(signal: AbortSignal): Promise<RankedPair[]>;
+  fundingSource?: "stream" | "rest";
+
+  /**
+   * Every perpetual this venue lists, by coin symbol.
+   *
+   * The whole listing, not a selection: the subscription set is now "everything the
+   * venue trades", so this is a discovery call rather than a ranking one. It is
+   * polled slowly — a listing set changes on the scale of days, not seconds — and
+   * its result is the input to sharding.
+   */
+  fetchInstruments(signal: AbortSignal): Promise<string[]>;
 
   /**
    * Optional REST funding snapshot, used only when this venue's funding stream
@@ -118,12 +150,6 @@ export interface ExchangeAdapter {
 
   /** Resolves the URL for a plan. KuCoin fetches a bullet token here. */
   resolveConnection(plan: WsEndpointPlan, signal: AbortSignal): Promise<WsConnectionTarget>;
-
-  /** Some venues encode the subscription set into the URL (Binance). */
-  urlCarriesTopics?: boolean;
-
-  /** Build the URL when topics live in the query string. */
-  buildTopicUrl?(plan: WsEndpointPlan, coins: string[]): string;
 
   subscribeMessages(plan: WsEndpointPlan, coins: string[]): unknown[];
   unsubscribeMessages(plan: WsEndpointPlan, coins: string[]): unknown[];
@@ -202,12 +228,14 @@ export async function fetchJson<T>(
   return (await res.json()) as T;
 }
 
-/** Rank by absolute funding rate, largest first, and cap the list. */
-export function rankByAbsRate(
-  pairs: { coin: string; ratePct: number | null }[],
-): RankedPair[] {
-  return pairs
-    .filter((p): p is { coin: string; ratePct: number } => p.ratePct !== null)
-    .map((p) => ({ coin: p.coin, absRatePct: Math.abs(p.ratePct) }))
-    .sort((a, b) => b.absRatePct - a.absRatePct);
+/**
+ * Coins one socket should hold for a plan, honouring a per-coin topic cost.
+ *
+ * Kept here rather than in the manager because the arithmetic belongs with the shape
+ * that describes it: a venue capping topics rather than symbols is a property of the
+ * plan, and the manager should not have to know which venues those are.
+ */
+export function coinsPerShard(plan: WsEndpointPlan): number {
+  const perCoin = plan.topicsPerCoin ?? 1;
+  return Math.max(1, Math.floor(plan.maxTopicsPerConnection / perCoin));
 }

@@ -5,7 +5,7 @@ import type {
   WsConnectionTarget,
   WsEndpointPlan,
 } from "@/lib/exchanges/adapter";
-import { fetchJson, num, rankByAbsRate } from "@/lib/exchanges/adapter";
+import { fetchJson, num } from "@/lib/exchanges/adapter";
 
 // Verified against live payloads (2026-08-20):
 //   REST /api/v1/orderBookDetails?filter=perp
@@ -78,14 +78,20 @@ interface Frame {
   timestamp?: number;
 }
 
+// `market_stats/all` is a true firehose and the parser already handles its keyed-map
+// shape: one socket, every market, funding and best bid/ask together. Confirmed live
+// at 21 frames covering 229 symbols in ten seconds. That also removes the dependency
+// on the coin → market_id map for subscribing, though the map is still what tells the
+// registry which markets exist.
 const PLAN: WsEndpointPlan = {
   key: "market_stats",
   carries: ["funding", "book"],
-  maxTopicsPerConnection: 120,
+  mode: "firehose",
+  maxTopicsPerConnection: 1,
 };
 
 /**
- * coin → market_id, refreshed by every ranking pass.
+ * coin → market_id, refreshed by every instrument pass.
  *
  * Module state rather than a field because the adapter is a plain object shared
  * across the process, matching how the other adapters are written.
@@ -146,16 +152,9 @@ export const lighterAdapter: ExchangeAdapter = {
   id: "lighter",
   defaultIntervalHours: 1,
 
-  async fetchRanking(signal) {
-    // The market map is refreshed on the same pass that ranks, so a subscription
-    // is never built from ids this adapter has not seen.
+  async fetchInstruments(signal) {
     await refreshMarkets(signal);
-    const rates = await lighterRates(signal);
-    const pairs = [...marketIds.keys()].map((coin) => ({
-      coin,
-      ratePct: rates.get(coin) ?? null,
-    }));
-    return rankByAbsRate(pairs);
+    return [...marketIds.keys()];
   },
 
   async fetchFundingSnapshot(signal, coins) {
@@ -186,20 +185,12 @@ export const lighterAdapter: ExchangeAdapter = {
     };
   },
 
-  subscribeMessages(_plan, coins) {
-    return coins.flatMap((coin) => {
-      const id = marketIds.get(coin);
-      if (id === undefined) return [];
-      return [{ type: "subscribe", channel: `market_stats/${id}` }];
-    });
+  subscribeMessages() {
+    return [{ type: "subscribe", channel: "market_stats/all" }];
   },
 
-  unsubscribeMessages(_plan, coins) {
-    return coins.flatMap((coin) => {
-      const id = marketIds.get(coin);
-      if (id === undefined) return [];
-      return [{ type: "unsubscribe", channel: `market_stats/${id}` }];
-    });
+  unsubscribeMessages() {
+    return [{ type: "unsubscribe", channel: "market_stats/all" }];
   },
 
   parseMessage(raw) {

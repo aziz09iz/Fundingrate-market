@@ -27,8 +27,6 @@ export interface SignedRequest {
  * outbound allowlist, which is what actually enforces the destination.
  */
 export const VENUE_HOSTS = {
-  binanceFutures: "fapi.binance.com",
-  binanceSpot: "api.binance.com",
   bybit: "api.bybit.com",
   okx: "www.okx.com",
   kucoinFutures: "api-futures.kucoin.com",
@@ -56,25 +54,6 @@ function queryString(params: Record<string, string | number | boolean | undefine
 /** Builds the absolute URL and refuses a host outside the allowlist. */
 function endpointUrl(host: string, pathWithQuery: string): string {
   return assertAllowedUrl(`https://${host}${pathWithQuery}`, "signed request");
-}
-
-// ─── Binance USDT-M futures and spot/wallet ─────────────────────────────────
-// HMAC-SHA256 over the query string; signature appended as a query param.
-export function signBinance(
-  creds: Credentials,
-  method: string,
-  path: string,
-  params: Record<string, string | number | boolean | undefined> = {},
-  host: string = VENUE_HOSTS.binanceFutures,
-): SignedRequest {
-  const withTs = { ...params, timestamp: Date.now(), recvWindow: 5000 };
-  const query = queryString(withTs);
-  const signature = hmacHex(creds.apiSecret, query);
-  return {
-    url: endpointUrl(host, `${path}?${query}&signature=${signature}`),
-    method,
-    headers: { "X-MBX-APIKEY": creds.apiKey },
-  };
 }
 
 // ─── Bybit v5 ───────────────────────────────────────────────────────────────

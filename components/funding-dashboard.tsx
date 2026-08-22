@@ -8,28 +8,21 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Loader2, Radio, RefreshCw, WifiOff } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { FiltersBar } from "@/components/filters-bar";
-import { StatsSummary, computeSummary } from "@/components/stats-summary";
+import { StatsSummary } from "@/components/stats-summary";
 import { FundingTable } from "@/components/funding-table";
-import { useMarketStream, type StreamStatus } from "@/lib/hooks/use-market-stream";
+import { MarketPagination } from "@/components/market-pagination";
+import { useMarketView, type StreamStatus } from "@/lib/hooks/use-market-view";
 import type {
   ExchangeId,
-  FundingRateRow,
+  MarketSummary,
+  MarketViewQuery,
   PairScope,
   SortKey,
   SortState,
   VenueHealth,
   VenueStatus,
 } from "@/lib/types";
-import {
-  EXCHANGE_IDS,
-  cn,
-  exchangeName,
-  formatAgo,
-  pairInScope,
-  scopeVenues,
-  venueTypeOf,
-} from "@/lib/utils";
-import { derivePriceSpread, deriveScopedDirection } from "@/lib/market/derive";
+import { EXCHANGE_IDS, cn, exchangeName, formatAgo, scopeVenues, venueTypeOf } from "@/lib/utils";
 
 const STATUS_LABEL: Record<StreamStatus, string> = {
   connecting: "Connecting",
@@ -76,44 +69,66 @@ interface FundingDashboardProps {
   description: string;
 }
 
+/** Placeholder while the first frame is in flight, so the cards can show skeletons. */
+const EMPTY_SUMMARY: MarketSummary = { highest: null, lowest: null, bestDiff: null };
+
 /**
  * The funding rate comparison table for one pair scope.
  *
- * All three views render this: they differ only in which venue combinations a
- * hedge may span, and a single component keeps sorting, filtering and stream
- * handling identical between them.
+ * All three views render this: they differ only in which venue combinations a hedge may
+ * span, and a single component keeps sorting, filtering and stream handling identical
+ * between them.
+ *
+ * Filtering, scoping, sorting and paging all happen on the server now. That is not only
+ * about payload size — Diff FR and Direction are derived from the venues in view, so
+ * sorting by Diff FR in the browser over one page would order rows by a number computed
+ * from a different venue set than the one on screen. The derivation and the sort have to
+ * agree, so both live server-side and this component renders what it is given.
  */
 export function FundingDashboard({ scope, title, description }: FundingDashboardProps) {
-  const { snapshot, status, lastUpdate, refresh } = useMarketStream();
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortState>({ key: "diffFr", dir: "desc" });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  // The stream has no request/response shape to await, so the pending state is
-  // derived: a snapshot newer than the click is the proof the reconnect worked,
-  // and the timer is only a ceiling for the case where none arrives.
   const [reconnectAt, setReconnectAt] = useState<number | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnecting =
-    reconnectAt !== null && (lastUpdate === null || lastUpdate < reconnectAt);
 
-  // Nothing has arrived yet: distinct from "arrived and empty", which is a real
-  // answer the table can state.
-  const awaitingFirstSnapshot = snapshot === null;
-
-  // Venues this scope can draw legs from. The stream carries every venue, so the
-  // split is a display filter rather than a second subscription.
+  // Venues this scope can draw legs from.
   const scoped = useMemo(() => scopeVenues(scope), [scope]);
-
   const [enabled, setEnabled] = useState<Record<ExchangeId, boolean>>(() => enabledFor(scoped));
   const [scopeKey, setScopeKey] = useState(scope);
 
-  // Reset the toggles when the view changes, so a venue hidden on one page does
-  // not stay hidden on the other. Adjusted during render rather than in an
-  // effect: an effect would paint one frame with the previous view's toggles.
+  // Reset the toggles when the view changes, so a venue hidden on one page does not
+  // stay hidden on the other. Adjusted during render rather than in an effect: an
+  // effect would paint one frame with the previous view's toggles.
   if (scopeKey !== scope) {
     setScopeKey(scope);
     setEnabled(enabledFor(scoped));
+    setPage(1);
   }
+
+  const visible = useMemo(() => scoped.filter((id) => enabled[id]), [scoped, enabled]);
+
+  const viewQuery = useMemo<MarketViewQuery>(
+    () => ({
+      scope,
+      venues: visible,
+      search: query.trim() || undefined,
+      sort: sort.key,
+      dir: sort.dir,
+      page,
+      pageSize,
+    }),
+    [scope, visible, query, sort.key, sort.dir, page, pageSize],
+  );
+
+  const { view, status, lastUpdate, refresh } = useMarketView(viewQuery);
+
+  const reconnecting = reconnectAt !== null && (lastUpdate === null || lastUpdate < reconnectAt);
+  // Nothing has arrived yet: distinct from "arrived and empty", which is a real answer
+  // the table can state.
+  const awaitingFirstFrame = view === null;
 
   // Tick "now" every second so countdowns and freshness labels stay live.
   useEffect(() => {
@@ -129,8 +144,8 @@ export function FundingDashboard({ scope, title, description }: FundingDashboard
     setReconnectAt(Date.now());
     refresh();
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-    // Gives up on the "reconnecting" label if no snapshot lands, so a dead feed
-    // does not leave the button disabled forever.
+    // Gives up on the "reconnecting" label if no frame lands, so a dead feed does not
+    // leave the button disabled forever.
     reconnectTimer.current = setTimeout(() => setReconnectAt(null), 4000);
   }, [refresh]);
 
@@ -139,51 +154,36 @@ export function FundingDashboard({ scope, title, description }: FundingDashboard
       key,
       dir: prev.key === key && prev.dir === "asc" ? "desc" : "asc",
     }));
+    // A new sort order makes the current page number meaningless.
+    setPage(1);
   }, []);
 
   const onToggleExchange = useCallback((id: ExchangeId) => {
     setEnabled((prev) => ({ ...prev, [id]: !prev[id] }));
+    setPage(1);
   }, []);
 
-  // Venues currently on screen: in this scope and switched on.
-  const visible = useMemo(() => scoped.filter((id) => enabled[id]), [scoped, enabled]);
+  const onQueryChange = useCallback((next: string) => {
+    setQuery(next);
+    setPage(1);
+  }, []);
 
-  /**
-   * Can the visible venues still form a pair this scope accepts?
-   *
-   * Switching venues off can leave a scope with nothing to quote — a cross view
-   * with every DEX hidden has only CEX legs left. That is a different state from
-   * "no market data", and the table says so rather than printing empty columns.
-   */
-  const pairable = useMemo(
-    () => visible.some((a) => visible.some((b) => a !== b && pairInScope(scope, a, b))),
-    [visible, scope],
-  );
+  const onPageSize = useCallback((size: number) => {
+    setPageSize(size);
+    setPage(1);
+  }, []);
 
-  const filteredRows = useMemo(() => {
-    const rows = snapshot?.rows ?? [];
-    // A coin with no rate on any venue in this view would render as a row of
-    // dashes, so it is dropped rather than shown as if data were missing.
-    const listed = rows.filter((r) => scoped.some((ex) => r.rates[ex]?.rate != null));
-    const q = query.trim().toUpperCase();
-    const matched = q ? listed.filter((r) => r.coin.includes(q)) : listed;
-    // Diff FR, Direction and Spread arrive derived across every venue. Recompute
-    // them under this scope: a cross-venue row whose best global pair is two CEX
-    // venues is not a cross-venue opportunity, and a row that names a venue whose
-    // column is hidden cannot be checked against anything.
-    return matched.map((row) => rescope(row, visible, scope));
-  }, [snapshot, query, scoped, visible, scope]);
-
-  /** Rows this scope can actually quote a hedge on, for the pair-scoped views. */
-  const quotable = useMemo(
-    () => (pairable ? filteredRows.filter((r) => r.direction !== null) : filteredRows),
-    [filteredRows, pairable],
-  );
-
-  const summary = useMemo(() => computeSummary(quotable, enabled), [quotable, enabled]);
+  // Memoised so the identity is stable when a frame arrives with the same rows, which
+  // is what lets the memoised table rows skip work.
+  const rows = useMemo(() => view?.rows ?? [], [view]);
+  const pairable = view?.pairable ?? visible.length >= 2;
   const venues = useMemo(
-    () => (snapshot?.venues ?? []).filter((v) => scoped.includes(v.exchange)),
-    [snapshot, scoped],
+    () => (view?.venues ?? []).filter((v) => scoped.includes(v.exchange)),
+    [view, scoped],
+  );
+  const totalStreams = useMemo(
+    () => (view?.venues ?? []).reduce((sum, v) => sum + v.subscriptions, 0),
+    [view],
   );
 
   return (
@@ -213,11 +213,15 @@ export function FundingDashboard({ scope, title, description }: FundingDashboard
         }
       />
 
-      <StatsSummary summary={summary} showDiff={pairable} loading={awaitingFirstSnapshot} />
+      <StatsSummary
+        summary={view?.summary ?? EMPTY_SUMMARY}
+        showDiff={pairable}
+        loading={awaitingFirstFrame}
+      />
 
       <FiltersBar
         query={query}
-        onQueryChange={setQuery}
+        onQueryChange={onQueryChange}
         enabled={enabled}
         exchanges={scoped}
         onToggleExchange={onToggleExchange}
@@ -225,27 +229,36 @@ export function FundingDashboard({ scope, title, description }: FundingDashboard
         refreshing={reconnecting}
       />
 
-      {!pairable && visible.length > 0 && (
-        <Alert variant="warning">{scopeHint(scope)}</Alert>
-      )}
+      {!pairable && visible.length > 0 && <Alert variant="warning">{scopeHint(scope)}</Alert>}
 
-      <section className="min-h-[40vh]">
+      <section className="flex min-h-[40vh] flex-col gap-3">
         <FundingTable
-          rows={quotable}
+          rows={rows}
           enabled={enabled}
           sort={sort}
           onSort={onSort}
           nowMs={nowMs}
           showPairColumns={pairable}
-          loading={awaitingFirstSnapshot}
+          loading={awaitingFirstFrame}
+        />
+        <MarketPagination
+          page={view?.page ?? page}
+          pageSize={view?.pageSize ?? pageSize}
+          total={view?.total ?? 0}
+          onPage={setPage}
+          onPageSize={onPageSize}
+          disabled={awaitingFirstFrame}
         />
       </section>
 
       <footer className="pt-1 text-center text-[10px] text-muted-foreground">
-        {snapshot
-          ? `${quotable.length} ${pairable ? "pairs" : "coins"} in scope · ${snapshot.coins.length} watched overall · ranking every ${snapshot.config.pollIntervalSec}s · nothing stored`
+        {view
+          ? `${view.total.toLocaleString()} ${pairable ? "pairs" : "coins"} in scope · ` +
+            `${view.universe.toLocaleString()} coins tracked · ` +
+            `${totalStreams.toLocaleString()} live subscriptions across ${venues.length} venues · nothing stored`
           : "Connecting to market stream…"}
-      </footer>    </div>
+      </footer>
+    </div>
   );
 }
 
@@ -267,41 +280,6 @@ function enabledFor(scoped: ExchangeId[]): Record<ExchangeId, boolean> {
     },
     {} as Record<ExchangeId, boolean>,
   );
-}
-
-/**
- * Re-derive a row's Diff FR, Direction and entry spread under one scope, using
- * only `visible` venues.
- *
- * The stream derives these across all seven venues at once, which is right for a
- * combined view but wrong for a scoped one: on the decentralized page it produced
- * rows headed "Long KuCoin · Short OKX" with neither column present, and on the
- * cross page the best global pair is usually two CEX venues.
- */
-function rescope(row: FundingRateRow, visible: ExchangeId[], scope: PairScope): FundingRateRow {
-  const { diffFr, direction } = deriveScopedDirection(
-    row.normalizedRates,
-    // The normalization interval is a property of the reading, so it is taken
-    // from the visible venues rather than recomputed from all of them.
-    smallestInterval(row, visible),
-    scope,
-    visible,
-  );
-  return {
-    ...row,
-    spread: diffFr,
-    diffFr,
-    direction,
-    priceSpread: derivePriceSpread(direction, row.tickers),
-  };
-}
-
-/** Shortest funding interval among the visible venues that list this coin. */
-function smallestInterval(row: FundingRateRow, visible: ExchangeId[]): number | null {
-  const intervals = visible
-    .filter((ex) => row.rates[ex]?.rate != null)
-    .map((ex) => row.rates[ex].intervalHours);
-  return intervals.length > 0 ? Math.min(...intervals) : null;
 }
 
 /** Connection state plus a per-venue breakdown, so a dead feed is obvious. */
@@ -337,7 +315,7 @@ function StreamBadge({
       </TooltipTrigger>
       <TooltipContent side="bottom" className="font-mono text-xs">
         <div className="flex flex-col gap-0.5">
-          <span className="text-muted-foreground">snapshot {formatAgo(lastUpdate, nowMs)}</span>
+          <span className="text-muted-foreground">frame {formatAgo(lastUpdate, nowMs)}</span>
           {venues.map((v) => (
             <span key={v.exchange} className="flex items-center gap-2">
               <span className={cn("w-14 text-[9px] uppercase", VENUE_HEALTH_CLASS[v.health])}>

@@ -310,7 +310,7 @@ const FUNDINGYIELD: StrategyDoc = {
     "Holding for days means exposure to everything that can happen in days: a venue halting withdrawals, one leg liquidating, or the difference simply evaporating after the fees are paid. The stop-loss bounds the loss, not the frequency.",
     "On live accounts the funding figure is pro-rated rather than measured, because venues fold funding into their balance. Both the profit target and the stop-loss read that estimate, so both are approximate on live in a way they are not on paper.",
     "Wider books than the other strategies accept, by design. maxSpreadCostPct is the guard, but the projection assumes both legs fill at the quoted touch — on a thin book they will not.",
-    "Eight of the ten venues can trade live. Lighter cannot, and its zero fees would help this strategy more than any other, so a paper result that includes it overstates what live can reproduce. edgeX can be read and cancelled but not entered.",
+    "Seven of the eight venues can trade live. Lighter cannot, and its zero fees would help this strategy more than any other, so a paper result that includes it overstates what live can reproduce.",
   ],
   suitedTo: [
     "Moderate funding differences that persist, rather than spikes — the opposite of what FundingSync wants.",
@@ -486,7 +486,7 @@ export const SHARED_MECHANICS: StrategyDocSection[] = [
     body: [
       "A deployment's own toggle is enough on paper, which risks nothing. Live also requires AUTO_TRADING=true in the server environment, so sending real orders unattended is never one mis-click away.",
       "Unarmed live deployments still evaluate every cycle and log what they would have done. That is the point of running unarmed — it is the only way to judge a configuration before trusting it with money.",
-      "Eight of the ten venues can trade live: the six centralized ones, plus Hyperliquid and Aster, whose orders are signed locally with a wallet key. edgeX is readable and its resting orders can be cancelled, but it cannot open a position — that needs a second signature over a payload this app cannot verify against the venue. Lighter is market data only, because it signs with a curve that has no JavaScript implementation. Paper can use all ten, so a paper result that leans on those two is better than live can reproduce.",
+      "Seven of the eight venues can trade live: the five centralized ones, plus Hyperliquid and Aster, whose orders are signed locally with a wallet key. Lighter is market data only, because it signs with a curve that has no JavaScript implementation. Paper can use all eight, so a paper result that leans on Lighter is better than live can reproduce.",
     ],
   },  {
     heading: "Refusals are logged, not hidden",

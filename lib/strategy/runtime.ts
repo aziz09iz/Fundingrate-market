@@ -76,7 +76,7 @@ import { exchangeName } from "@/lib/utils";
  * before anything is sent.
  *
  * Deployments compete for venue legs rather than running in isolation. An exchange
- * nets positions per (coin, side), so two deployments long BTC on Binance would share
+ * nets positions per (coin, side), so two deployments long BTC on Bybit would share
  * one exchange position. The first to claim a leg holds it; the loser logs which
  * deployment beat it. Iteration follows creation order, so that outcome is
  * deterministic rather than dependent on map ordering.

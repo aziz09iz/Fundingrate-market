@@ -11,7 +11,6 @@ import {
   decimalRateToPct,
   fetchJson,
   num,
-  rankByAbsRate,
 } from "@/lib/exchanges/adapter";
 
 // Verified against live payloads (2026-08-20):
@@ -21,8 +20,8 @@ import {
 //   WS   <sym>@markPrice@1s -> { e:"markPriceUpdate", s, r, T, E }
 //   WS   <sym>@bookTicker   -> { e:"bookTicker", s, b, a, E, T }
 //
-// Aster is a near-exact clone of Binance's USDⓈ-M futures API, so the shapes and
-// field names below are Binance's. Two differences matter:
+// Aster implements the widely cloned USDⓈ-M futures API, so the shapes and field
+// names below follow that convention. Two differences matter:
 //
 //   · Cadence is genuinely per-symbol. Of 702 symbols, 366 fund hourly, 260 every
 //     8h, 73 every 4h and 3 every 2h. Diff FR divides by the interval, so
@@ -34,8 +33,8 @@ import {
 //     `*USD` set; the SHIELD names survive as their own coins and simply never
 //     match another venue.
 //
-// Unlike Binance, Aster's mark-price stream is reachable, so funding arrives on
-// the socket and the REST snapshot is only a fallback.
+// Aster's mark-price stream is reachable, so funding arrives on the socket and the
+// REST snapshot is only a fallback.
 
 const REST = "https://fapi.asterdex.com";
 const WS = "wss://fstream.asterdex.com/ws";
@@ -65,40 +64,52 @@ interface Frame {
 }
 
 /**
- * One socket carries both topics.
+ * Two firehose sockets, one per data kind.
  *
- * Aster allows 200 streams per connection and each coin needs two (mark price
- * and book ticker), so the cap is set at 90 coins to stay clear of the limit.
+ * Aster publishes both all-market channels and both were confirmed live: `!markPrice@arr@1s`
+ * delivered every one of 699 symbols in a single array frame each second, and
+ * `!bookTicker` delivered 362 symbols individually. That replaces what used to be
+ * eight sharded sockets of 90 coins each with exactly two, so the whole venue costs
+ * two connections however many pairs it lists.
+ *
+ * They are separate plans rather than one because the book half is the expensive
+ * half: keeping it on its own socket means it can be dropped without disturbing
+ * funding.
  */
-const PLAN: WsEndpointPlan = {
-  key: "combined",
-  carries: ["funding", "book"],
-  maxTopicsPerConnection: 90,
+const FUNDING_PLAN: WsEndpointPlan = {
+  key: "markPriceAll",
+  carries: ["funding"],
+  mode: "firehose",
+  maxTopicsPerConnection: 1,
 };
 
-function streamNames(coins: string[]): string[] {
-  return coins.flatMap((coin) => {
-    const symbol = `${coin}usdt`.toLowerCase();
-    return [`${symbol}@markPrice@1s`, `${symbol}@bookTicker`];
-  });
+const BOOK_PLAN: WsEndpointPlan = {
+  key: "bookTickerAll",
+  carries: ["book"],
+  mode: "firehose",
+  maxTopicsPerConnection: 1,
+};
+
+function firehoseStream(plan: WsEndpointPlan): string {
+  return plan.key === "markPriceAll" ? "!markPrice@arr@1s" : "!bookTicker";
 }
 
 export const asterAdapter: ExchangeAdapter = {
   id: "aster",
   defaultIntervalHours: 8,
 
-  async fetchRanking(signal) {
+  async fetchInstruments(signal) {
     const rows = await fetchJson<PremiumIndexRow[]>(
       "aster/premiumIndex",
       `${REST}/fapi/v1/premiumIndex`,
       signal,
     );
-    const pairs = rows.flatMap((r) => {
+    const coins = new Set<string>();
+    for (const r of rows) {
       const coin = baseFromConcatSymbol(r.symbol ?? "");
-      if (!coin) return [];
-      return [{ coin, ratePct: decimalRateToPct(r.lastFundingRate) }];
-    });
-    return rankByAbsRate(pairs);
+      if (coin) coins.add(coin);
+    }
+    return [...coins];
   },
 
   async fetchFundingSnapshot(signal, coins) {
@@ -139,64 +150,69 @@ export const asterAdapter: ExchangeAdapter = {
   },
 
   endpoints() {
-    return [PLAN];
+    return [FUNDING_PLAN, BOOK_PLAN];
   },
 
   async resolveConnection(): Promise<WsConnectionTarget> {
     return { url: WS };
   },
 
-  subscribeMessages(_plan, coins) {
-    if (coins.length === 0) return [];
-    return [{ method: "SUBSCRIBE", params: streamNames(coins), id: Date.now() }];
+  subscribeMessages(plan) {
+    return [{ method: "SUBSCRIBE", params: [firehoseStream(plan)], id: Date.now() }];
   },
 
-  unsubscribeMessages(_plan, coins) {
-    if (coins.length === 0) return [];
-    return [{ method: "UNSUBSCRIBE", params: streamNames(coins), id: Date.now() }];
+  unsubscribeMessages(plan) {
+    return [{ method: "UNSUBSCRIBE", params: [firehoseStream(plan)], id: Date.now() }];
   },
 
   parseMessage(raw) {
-    let frame: Frame;
+    let payload: unknown;
     try {
-      frame = JSON.parse(raw) as Frame;
+      payload = JSON.parse(raw);
     } catch {
       return [];
     }
-    // Subscribe acks look like { id, result: null } and carry no symbol.
-    if (!frame.s) return [];
-    const coin = baseFromConcatSymbol(frame.s);
-    if (!coin) return [];
+    // `!markPrice@arr` delivers one array frame holding every symbol, where the
+    // per-symbol stream delivered one object. Both shapes are handled so a change
+    // of channel does not silently stop producing updates.
+    const frames: Frame[] = Array.isArray(payload) ? (payload as Frame[]) : [payload as Frame];
+    const out: StreamUpdate[] = [];
+    for (const frame of frames) {
+      // Subscribe acks look like { id, result: null } and carry no symbol.
+      if (!frame?.s) continue;
+      const coin = baseFromConcatSymbol(frame.s);
+      if (!coin) continue;
 
-    if (frame.e === "markPriceUpdate") {
-      const ratePct = decimalRateToPct(frame.r);
-      if (ratePct === null) return [];
-      return [{
-        kind: "funding",
-        exchange: "aster",
-        coin,
-        ratePct,
-        nextFundingTime: num(frame.T),
-        // Per-symbol cadence arrives through fetchIntervals.
-        intervalHours: null,
-        ts: num(frame.E) ?? Date.now(),
-      } satisfies StreamUpdate];
+      if (frame.e === "markPriceUpdate") {
+        const ratePct = decimalRateToPct(frame.r);
+        if (ratePct === null) continue;
+        out.push({
+          kind: "funding",
+          exchange: "aster",
+          coin,
+          ratePct,
+          nextFundingTime: num(frame.T),
+          // Per-symbol cadence arrives through fetchIntervals.
+          intervalHours: null,
+          ts: num(frame.E) ?? Date.now(),
+        });
+        continue;
+      }
+
+      if (frame.e === "bookTicker") {
+        const bid = num(frame.b);
+        const ask = num(frame.a);
+        if (bid === null && ask === null) continue;
+        out.push({
+          kind: "book",
+          exchange: "aster",
+          coin,
+          bid,
+          ask,
+          ts: num(frame.E) ?? Date.now(),
+        });
+      }
     }
-
-    if (frame.e === "bookTicker") {
-      const bid = num(frame.b);
-      const ask = num(frame.a);
-      if (bid === null && ask === null) return [];
-      return [{
-        kind: "book",
-        exchange: "aster",
-        coin,
-        bid,
-        ask,
-        ts: num(frame.E) ?? Date.now(),
-      } satisfies StreamUpdate];
-    }
-
-    return [];
+    return out;
   },
 };

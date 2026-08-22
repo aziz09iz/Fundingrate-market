@@ -7,10 +7,10 @@ import type { SignedRequest } from "@/lib/private/signing";
 /**
  * Aster's V3 authenticated API.
  *
- * Aster's *public* API is a near-exact Binance clone, and its V3 private endpoints
- * keep that shape — `/fapi/v3/order`, `/fapi/v3/balance`, `/fapi/v3/positionRisk`,
- * with Binance's own field names. What is not Binance is the authentication. There
- * is no API secret and no HMAC. Instead:
+ * Aster's *public* API follows the conventional USDⓈ-M futures shape, and its V3
+ * private endpoints keep it — `/fapi/v3/order`, `/fapi/v3/balance`,
+ * `/fapi/v3/positionRisk`, with the same field names. What is unconventional is the
+ * authentication. There is no API secret and no HMAC. Instead:
  *
  *   1. The parameters, including `signer` and `nonce`, are urlencoded in insertion
  *      order into one string.
@@ -78,8 +78,8 @@ export type AsterParams = Record<string, string | number | boolean | undefined>;
  * `/fapi/v3/order` example sends exactly those two and its authentication table
  * says TRADE and USER_DATA endpoints need "a valid signer and signature" — `user`
  * belongs to the master-account endpoints (agent approval, sub-accounts), which
- * this app does not call. Sending an unexpected parameter to a Binance-shaped API
- * is itself an error, so nothing extra is added.
+ * this app does not call. Sending an unexpected parameter to this API family is
+ * itself an error, so nothing extra is added.
  */
 export function signAster(
   creds: Credentials,

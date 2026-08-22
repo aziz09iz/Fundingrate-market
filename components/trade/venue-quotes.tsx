@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
-import type { ExchangeId, FundingRateRow, PriceSide } from "@/lib/types";
+import type { ExchangeId, MarketViewRow, PriceSide } from "@/lib/types";
 import {
   EXCHANGES,
   cn,
@@ -17,7 +17,7 @@ import { executablePriceSide } from "@/lib/market/derive";
 
 interface VenueQuotesProps {
   coin: string;
-  row: FundingRateRow | null;
+  row: MarketViewRow | null;
   /** Venues involved in the hedge being configured, highlighted in the list. */
   longExchange?: ExchangeId;
   shortExchange?: ExchangeId;
